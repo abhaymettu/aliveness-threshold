@@ -1,106 +1,120 @@
-"""One runnable check: does the estimator recover a known exchange rate?
+"""The runnable check behind the headline.
 
     .venv/bin/python analysis/test_analysis.py
 
-The fixture is generated with TRUE_SHIFTS_MS baked in. If the shift model is
-wrong, the recovery assertions fail. That is the whole point of simulating.
+The claim in README.md is that these judges do not track conversational
+timing. That claim is only worth anything if the analysis WOULD have seen
+timing sensitivity had it been there. So the fixture is the positive control:
+SIMULATED_* is generated with a real latency response and a real cue effect
+baked in, and these assertions require the estimators to find both. If they
+cannot recover an effect that is present by construction, the flat result on
+the real ratings means nothing and this test fails loudly.
+
+Also checked: the shuffled-cue null returns null, the variance components
+partition to 1, and the SIMULATED_ quarantine holds.
 """
-import os, subprocess, sys, tempfile
+import os
+import subprocess
+import sys
+import tempfile
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import core
-from simulate import TRUE_SHIFTS_MS, TRUE_X50, CUES, LATENCIES
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import core  # noqa: E402
+from run import MATCHED, CUED, is_simulated  # noqa: E402
+from simulate import CUES, LATENCIES  # noqa: E402
 
 
 def build(tmp):
-    subprocess.check_call([sys.executable,
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "simulate.py"),
-        "--outdir", tmp, "--humans", "30", "--llms", "6", "--exchanges", "8",
-        "--seed", "3"], stdout=subprocess.DEVNULL)
-    return core.load(f"{tmp}/SIMULATED_ratings.jsonl", f"{tmp}/SIMULATED_stimuli.jsonl")
+    subprocess.check_call(
+        [sys.executable, os.path.join(HERE, "simulate.py"), "--outdir", tmp,
+         "--humans", "30", "--llms", "6", "--exchanges", "8", "--seed", "3"],
+        stdout=subprocess.DEVNULL)
+    return core.load(f"{tmp}/SIMULATED_ratings.jsonl",
+                     f"{tmp}/SIMULATED_stimuli.jsonl")
+
+
+def ci(v):
+    return v["values"] if "values" in v else v
+
+
+def excludes_zero(v):
+    c = v["ci"]
+    return c is not None and (c[0] > 0 or c[1] < 0)
+
+
+def brackets(v):
+    return v["ci"] is not None and v["ci"][0] <= v["est"] <= v["ci"][1]
 
 
 def main():
     tmp = tempfile.mkdtemp()
     d = build(tmp)
+    hum = core.subset(d, d["rater_type"] == "human")
 
-    # --- contract: loader shape
+    # --- loader contract
     assert len(d["x"]) == len(d["cue"]) == len(d["alive"]) == len(d["rater_id"])
     assert set(np.unique(d["cue"])) == set(CUES)
     assert d["n_unmatched"] == 0, "every rating must join to a stimulus"
-
-    # --- loader must prefer measured gap over the nominal cell
     assert not np.all(np.isin(d["x"], LATENCIES)), \
-        "x should carry renderer jitter from actual_gap_ms, not the nominal latency"
+        "x must carry renderer jitter from actual_gap_ms, not the nominal cell"
 
-    # --- reference cue is pinned at zero shift
-    hum = core.subset(d, d["rater_type"] == "human")
-    f = core.fit_shift_continuous(hum["x"], hum["cue"], hum["alive"])
-    assert f.cues[0] == "none", "the none cue must be the reference"
-    assert f.shifts_ms["none"] == 0.0
+    # --- POSITIVE CONTROL 1: the fixture's latency response must be detected.
+    # The simulated humans sit on a falling sigmoid, so aliveness inside
+    # cue=none must slope down and the interval must clear zero.
+    s = ci(core.latency_slope(hum, "alive", cues=["none"], n_boot=400, seed=5))
+    slope = s["slope_per_s"]
+    assert slope["est"] < 0, f"fixture slope should be negative, got {slope['est']:.2f}"
+    assert excludes_zero(slope), \
+        f"analysis missed a latency response that is there by construction: {slope}"
+    assert brackets(slope), "point estimate outside its own CI"
 
-    # --- RECOVERY: human-only fit must land near the ground truth
-    errs = {}
-    for c, true in TRUE_SHIFTS_MS.items():
-        est = f.shifts_ms[c]
-        errs[c] = est - true
-        assert abs(est - true) < 80, f"{c}: recovered {est:.0f} ms, truth {true:.0f} ms"
-    assert abs(f.x50_ms - TRUE_X50) < 120, f"x50 {f.x50_ms:.0f} vs truth {TRUE_X50}"
+    # --- POSITIVE CONTROL 2: the matched-gap cue contrast must be detected.
+    c = ci(core.contrast(hum, "alive", CUED, ["none"], nominal_a=MATCHED,
+                         nominal_b=MATCHED, n_boot=400, seed=5))["diff"]
+    assert c["est"] > 0 and excludes_zero(c), f"fixture cue effect missed: {c}"
 
-    # --- ordering must be preserved
-    order = [c for c, _ in sorted(f.shifts_ms.items(), key=lambda kv: -kv[1])]
-    truth_order = [c for c, _ in sorted(TRUE_SHIFTS_MS.items(), key=lambda kv: -kv[1])]
-    assert order == truth_order, f"ranking {order} != truth {truth_order}"
+    # --- NULL: shuffling the cue label must kill the cue contrast.
+    # Negative findings have to stay negative, including in the test.
+    null = core.subset(hum, np.ones(len(hum["x"]), bool))
+    null["cue"] = np.random.default_rng(0).permutation(null["cue"])
+    nc = ci(core.contrast(null, "alive", CUED, ["none"], nominal_a=MATCHED,
+                          nominal_b=MATCHED, n_boot=400, seed=1))["diff"]
+    assert not excludes_zero(nc), f"shuffled cues produced a 'real' effect: {nc}"
 
-    # --- a null fixture must return a null result (negative findings stay negative)
-    null = core.subset(d, np.ones(len(d["x"]), bool))
-    rng = np.random.default_rng(0)
-    null["cue"] = rng.permutation(null["cue"])  # break the cue/latency pairing
-    nb = core.bootstrap_shifts(null, "alive", n_boot=200, seed=1)
-    for c, r in nb["shifts"].items():
-        if c == nb["reference"]:
-            continue
-        assert not r.get("excludes_zero"), \
-            f"shuffled cues produced a 'real' shift for {c}: {r}"
+    # --- the contrast must respect the matched-gap restriction it advertises
+    r = core.contrast(hum, "alive", CUED, ["none"], nominal_a=MATCHED,
+                      nominal_b=MATCHED, n_boot=50, seed=1)
+    assert r["a"]["nominal"] == MATCHED and r["b"]["nominal"] == MATCHED
+    assert r["n_ratings"] == r["a"]["n_ratings"] + r["b"]["n_ratings"]
 
-    # --- bootstrap CI must bracket the point estimate and the truth
-    bs = core.bootstrap_shifts(hum, "alive", n_boot=300, seed=5)
-    for c, r in bs["shifts"].items():
-        if c == bs["reference"] or r["ci_lo"] is None:
-            continue
-        assert r["ci_lo"] <= r["shift_ms"] <= r["ci_hi"], f"{c}: point outside its own CI"
-        assert r["ci_lo"] <= TRUE_SHIFTS_MS[c] <= r["ci_hi"], \
-            f"{c}: 95% CI [{r['ci_lo']:.0f},{r['ci_hi']:.0f}] misses truth {TRUE_SHIFTS_MS[c]}"
-
-    # --- binary DV fits and orders the same way
-    fb = core.fit_shift_binary(hum["x"], hum["cue"], hum["wait"])
-    ob = [c for c, _ in sorted(fb.shifts_ms.items(), key=lambda kv: -kv[1])]
-    assert ob == truth_order, f"would_wait ranking {ob} != truth {truth_order}"
-
-    # --- variance decomposition components are a partition of 1
+    # --- variance components are a partition of 1
     v = core.variance_decomposition(d, "alive")
-    tot = v["unique_condition"] + v["unique_rater"] + v["shared"] + v["residual"]
+    tot = (v["unique_condition"] + v["unique_rater"] + v["shared"] + v["residual"])
     assert abs(tot - 1.0) < 1e-6, f"variance components sum to {tot}"
 
-    # --- agreement must detect the attenuation the fixture built in
-    ag = core.llm_human_agreement(d, "alive", n_boot=200, seed=2)
-    assert ag["available"]
-    div = ag["exchange_rate_divergence"]
-    assert all(v["ratio_llm_over_human"] < 0.7 for v in div.values()), \
-        "fixture attenuates llm shifts to 0.25x; agreement check failed to see it"
-    assert ag["pearson_r"] > 0.8, "fixture llm raters should still correlate on stimulus means"
+    # --- per_rater reports one row per rater and no fabricated CIs
+    pr = core.per_rater(hum, "alive")
+    assert pr["n_raters"] == len(np.unique(hum["rater_id"])) == len(pr["raters"])
+    assert all("ci" not in row for row in pr["raters"].values())
+
+    # --- every estimator carries its own n
+    assert core.latency_slope(hum, "alive", cues=["none"], n_boot=50)["n_ratings"] > 0
+    assert core.cell_means(hum, "alive", n_boot=50)["n_per_level"]
 
     # --- the simulated-output quarantine
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from run import is_simulated
     assert is_simulated("SIMULATED_ratings.jsonl")
     assert is_simulated("/a/b/SIMULATED_ratings.jsonl")
     assert not is_simulated("data/ratings.jsonl")
+    assert not is_simulated(None)
 
-    print("recovery errors (est - truth, ms):",
-          {c: round(v) for c, v in errs.items()})
+    print(f"positive control: slope {slope['est']:+.2f}/s "
+          f"[{slope['ci'][0]:.2f}, {slope['ci'][1]:.2f}], "
+          f"cue effect {c['est']:+.2f} [{c['ci'][0]:.2f}, {c['ci'][1]:.2f}]")
+    print(f"null control: shuffled cue effect {nc['est']:+.2f} "
+          f"[{nc['ci'][0]:.2f}, {nc['ci'][1]:.2f}] -- includes zero, as required")
     print("all checks passed")
 
 
