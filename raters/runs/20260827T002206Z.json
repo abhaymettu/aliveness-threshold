@@ -1,0 +1,27 @@
+{
+  "run": "20260827T002206Z",
+  "model": "sonnet",
+  "rater_type": "llm",
+  "rater_modality": "transcript+timing",
+  "personas": [
+    "patient",
+    "impatient",
+    "linguist",
+    "naive",
+    "skeptic",
+    "voice_designer"
+  ],
+  "batch_size": 10,
+  "n_stimuli": 90,
+  "expected": 540,
+  "written": 530,
+  "dropped_unparsed": [],
+  "failed_calls": [
+    [
+      "patient",
+      10,
+      "Command '['claude', '-p', '--model', 'sonnet']' timed out after 600 seconds"
+    ]
+  ],
+  "note": "judges read raters/render.py descriptions, not audio; no rating was defaulted or retried into existence"
+}

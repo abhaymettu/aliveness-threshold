@@ -160,8 +160,8 @@ textarea{width:100%;height:130px;font:12px/1.5 ui-monospace,Menlo,monospace;
 <section id="done" class="hide">
   <h1>Done — thank you.</h1>
   <div class="card">
-    <p>You rated <b id="nDone">0</b> clips. Send the file back and it goes
-      straight into the dataset.</p>
+    <p>You rated <b id="nDone">0</b> clips. Download the file and send it
+      back to whoever pointed you here.</p>
     <div class="row" style="margin-top:4px">
       <button class="primary" id="dl">Download my ratings</button>
       <button id="copy">Copy instead</button>
@@ -179,6 +179,10 @@ textarea{width:100%;height:130px;font:12px/1.5 ui-monospace,Menlo,monospace;
 <script>
 "use strict";
 (function(){
+// This page is the instrument for the human arm of the study. It writes
+// nothing anywhere on its own: ratings live in this browser until the person
+// downloads them and sends the file back by hand. Nothing here is example
+// data, and nothing here is ever written into data/ratings.jsonl by machine.
 
 // Audio lives outside the repo checkout when this page is hosted, so allow
 // ?audio=https://example.com/clips/ to point somewhere else. Default is the

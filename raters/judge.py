@@ -42,13 +42,22 @@ def load_stimuli(path=STIMULI):
         return [json.loads(l) for l in f if l.strip()]
 
 
-def call_model(prompt, model, timeout=600):
-    p = subprocess.run(["claude", "-p", "--model", model],
-                       input=prompt, text=True, capture_output=True,
-                       timeout=timeout)
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr.strip()[:400] or "claude -p failed")
-    return p.stdout
+def call_model(prompt, model, timeout=300, tries=2):
+    """Ask the model. A transport failure gets ONE retry -- re-asking is not
+    the same as inventing an answer. A reply that arrives but is malformed is
+    never retried into existence; it is dropped in parse_judgements."""
+    last = None
+    for _ in range(tries):
+        try:
+            p = subprocess.run(["claude", "-p", "--model", model],
+                               input=prompt, text=True, capture_output=True,
+                               timeout=timeout)
+            if p.returncode == 0:
+                return p.stdout
+            last = RuntimeError(p.stderr.strip()[:300] or "claude -p failed")
+        except subprocess.TimeoutExpired as e:
+            last = e
+    raise last
 
 
 def parse_judgements(text, expected_labels):
@@ -101,6 +110,44 @@ def rate_batch(persona, stims, model):
     return rows, missing
 
 
+def verify(path=RATINGS):
+    """Assert the ratings file is joinable and honestly labelled.
+
+        .venv/bin/python -m raters.judge --verify
+    """
+    stims = {s["stim_id"] for s in load_stimuli()}
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+    assert rows, f"{path} is empty"
+    for r in rows:
+        assert r["stim_id"] in stims, f"orphan rating: {r['stim_id']}"
+        assert r["rater_type"] in ("llm", "human"), r["rater_type"]
+        # an llm judge must never be filed as, or silently look like, a human
+        if r["rater_type"] == "llm":
+            assert r["rater_id"].startswith("llm-"), r["rater_id"]
+            assert r["rater_modality"] != "audio", \
+                f"{r['rater_id']} claims it heard audio; it cannot"
+        assert 1 <= r["aliveness_1_7"] <= 7 and isinstance(r["aliveness_1_7"], int)
+        assert 1 <= r["broken_1_7"] <= 7 and isinstance(r["broken_1_7"], int)
+        assert isinstance(r["would_wait_again_bool"], bool)
+        dt.datetime.fromisoformat(r["ts"])
+
+    types = {}
+    for r in rows:
+        types[r["rater_type"]] = types.get(r["rater_type"], 0) + 1
+    print(f"rater_type counts: {types}")
+
+    by_rater = {}
+    for r in rows:
+        by_rater.setdefault(r["rater_id"], []).append(r)
+    print(f"ok: {len(rows)} ratings over {len(by_rater)} raters, "
+          f"{len({r['stim_id'] for r in rows})}/{len(stims)} stimuli covered")
+    for rid, rs in sorted(by_rater.items()):
+        mean = sum(x["aliveness_1_7"] for x in rs) / len(rs)
+        wait = sum(x["would_wait_again_bool"] for x in rs) / len(rs)
+        print(f"    {rid:<34} n={len(rs):<4} aliveness={mean:.2f}  "
+              f"would-wait={wait:.0%}  ({rs[0]['rater_modality']})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="sonnet")
@@ -111,7 +158,14 @@ def main():
     ap.add_argument("--out", default=RATINGS)
     ap.add_argument("--smoke", action="store_true",
                     help="one persona, six clips, prints the rows")
+    ap.add_argument("--fill", action="store_true",
+                    help="rate only the persona x stimulus pairs missing from --out")
+    ap.add_argument("--verify", action="store_true",
+                    help="check the existing ratings file and exit")
     args = ap.parse_args()
+
+    if args.verify:
+        return verify(args.out)
 
     personas = args.personas.split(",")
     stimuli = load_stimuli()
@@ -124,16 +178,30 @@ def main():
 
     # Each persona sees the set in its own shuffled order, seeded by name, so
     # order effects are not shared across raters.
+    done = set()
+    if args.fill and os.path.exists(args.out):
+        for line in open(args.out):
+            if line.strip():
+                r = json.loads(line)
+                done.add((r["rater_id"], r["stim_id"]))
+
     jobs = []
     for persona in personas:
         order = list(stimuli)
         random.Random(f"{persona}/{args.model}").shuffle(order)
+        if args.fill:
+            rid = f"llm-{args.model}-{persona}"
+            order = [s for s in order if (rid, s["stim_id"]) not in done]
         for i in range(0, len(order), args.batch):
             jobs.append((persona, order[i:i + args.batch]))
+    n_todo = sum(len(j[1]) for j in jobs)
 
-    print(f"{len(stimuli)} stimuli x {len(personas)} personas "
-          f"= {len(stimuli) * len(personas)} judgements in {len(jobs)} calls "
-          f"({args.model})", file=sys.stderr)
+    print(f"{len(stimuli)} stimuli x {len(personas)} personas -> "
+          f"{n_todo} judgements to collect in {len(jobs)} calls ({args.model})"
+          + (" [fill]" if args.fill else ""), file=sys.stderr)
+    if not jobs:
+        print("nothing missing", file=sys.stderr)
+        return
 
     rows, missing, failed = [], [], []
     with cf.ThreadPoolExecutor(args.workers) as ex:
@@ -144,8 +212,10 @@ def main():
             try:
                 got, miss = fut.result()
             except Exception as e:
-                failed.append((persona, len(stims), str(e)[:120]))
-                print(f"  [{n}/{len(jobs)}] {persona} FAILED: {e}",
+                failed.append({"persona": persona,
+                               "stim_ids": [x["stim_id"] for x in stims],
+                               "error": str(e)[:160]})
+                print(f"  [{n}/{len(jobs)}] {persona} FAILED ({len(stims)} clips): {e}",
                       file=sys.stderr)
                 continue
             rows += got
@@ -167,18 +237,19 @@ def main():
         "expected": len(stimuli) * len(personas), "written": len(rows),
         "dropped_unparsed": [m[1] for m in missing],
         "failed_calls": failed,
+        "mode": "fill" if args.fill else "full",
         "note": ("judges read raters/render.py descriptions, not audio; "
                  "no rating was defaulted or retried into existence"),
     }
     with open(os.path.join(RUNS, f"{stamp}.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
-    exp = len(stimuli) * len(personas)
+    exp = n_todo
     print(f"wrote {len(rows)}/{exp} ratings -> {os.path.relpath(args.out, ROOT)}",
           file=sys.stderr)
     if len(rows) < exp:
         print(f"  {exp - len(rows)} missing (dropped, never invented): "
-              f"{len(missing)} unparsed, {sum(f[1] for f in failed)} in failed calls",
+              f"{len(missing)} unparsed, {sum(len(f['stim_ids']) for f in failed)} in failed calls",
               file=sys.stderr)
     if args.smoke:
         for r in rows:
