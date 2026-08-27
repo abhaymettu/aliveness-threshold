@@ -69,6 +69,13 @@ from harness import audio, tts
 CHUNK_MS = 20.0  # input chunk granularity
 HANGOVER_MS = 350.0  # trailing silence before the endpointer calls the turn over
 PARTIAL_EVERY_MS = 500.0  # new audio needed before another partial decode
+MAX_TURN_MS = 20000.0  # hard stop on a turn that never falls silent (mic path)
+# Live endpointing only. audio.speech_mask's -55 dBFS floor is right for a
+# rendered file, but the live endpointer compares against a *running* peak, so
+# at the start of a stream room noise clears a tiny peak and arms the hangover
+# on nothing. -45 dBFS is the level below which nothing here is a talker.
+# Gap measurement does not use this: that is harness.audio.segments, untouched.
+LIVE_FLOOR_DBFS = -45.0
 BLOCK = 128  # output callback block, 5.8ms at 22050 Hz
 MAX_TOKENS = 48
 ASR_MODEL = "base.en"        # final transcript
@@ -289,11 +296,18 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
     pw = threading.Thread(target=partial_worker, daemon=True)
     pw.start()
 
-    # live endpointer: frame RMS against the loudest chunk so far, same -35dB
-    # relative / -55dBFS absolute pair audio.speech_mask uses
+    # live endpointer: chunk RMS against the loudest chunk so far, the same
+    # -35dB relative rule audio.speech_mask uses, over a stricter floor
     peak, last_speech, t_end, ended = 0.0, None, None, False
+    deadline = time.perf_counter() + MAX_TURN_MS / 1000.0
     while not ended:
-        c = q.get()
+        if time.perf_counter() > deadline:
+            t_end, ended = time.perf_counter(), True
+            break
+        try:
+            c = q.get(timeout=1.0)
+        except queue.Empty:
+            continue
         if c is None:
             t_end, ended = time.perf_counter(), True
             break
@@ -302,7 +316,7 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
         now = time.perf_counter()
         r = float(np.sqrt((c.astype(np.float64) ** 2).mean()))
         peak = max(peak, r)
-        if r >= peak * 10 ** (-35.0 / 20.0) and r >= 10 ** (-55.0 / 20.0):
+        if r >= peak * 10 ** (-35.0 / 20.0) and r >= 10 ** (LIVE_FLOOR_DBFS / 20.0):
             last_speech = now
         elif last_speech is not None and (now - last_speech) * 1000.0 >= HANGOVER_MS:
             t_end, ended = now, True

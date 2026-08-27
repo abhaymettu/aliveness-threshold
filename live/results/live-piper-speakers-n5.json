@@ -1,0 +1,281 @@
+{
+  "run_at": "2026-08-26T22:36:53",
+  "n_turns": 5,
+  "input": "TTS-rendered prompt, paced at 1x",
+  "asr": {
+    "final_model": "base.en",
+    "partial_model": "tiny.en",
+    "mode": "chunked, whole-buffer re-decode",
+    "partial_every_ms": 500.0
+  },
+  "lm": {
+    "model": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "max_tokens": 48,
+    "stop": "first sentence"
+  },
+  "tts": {
+    "backend": "piper",
+    "voice": "/Users/abhay/Desktop/Playground/aliveness-threshold/models/piper-live/en_US-lessac-medium.onnx",
+    "mode": "whole utterance"
+  },
+  "prompt_tts": {
+    "backend": "piper",
+    "voice": "/Users/abhay/Desktop/Playground/aliveness-threshold/models/piper-live/en_US-lessac-medium.onnx"
+  },
+  "output_device": "MacBook Pro Speakers",
+  "output_device_latency_ms": 42.0,
+  "model_load_ms": 4710.0,
+  "loadavg_start": [
+    14.91,
+    14.62,
+    15.98
+  ],
+  "warmup_ms": 1876.7,
+  "warmup": "one ASR decode, one LM generation and one TTS synthesis are run before turn 0, so no measured turn pays a cold graph",
+  "hangover_ms": 350.0,
+  "gap_definition": "agent speech onset - user speech offset, both silence-trimmed, measured with harness.audio.segments (merge_gap_ms=30, min_len_ms=20) -- the definition in harness/exchange.py",
+  "loadavg_end": [
+    14.55,
+    14.44,
+    15.84
+  ],
+  "summary_ms": {
+    "gap_ms": {
+      "n": 5,
+      "median": 1809.8,
+      "p25": 1493.3,
+      "p75": 3141.8,
+      "iqr": 1648.5,
+      "min": 1371.9,
+      "max": 3763.3,
+      "mean": 2216.0,
+      "sd": 965.1
+    },
+    "acoustic_gap_ms": {
+      "n": 5,
+      "median": 1851.8,
+      "p25": 1535.3,
+      "p75": 3183.8,
+      "iqr": 1648.5,
+      "min": 1413.9,
+      "max": 3805.3,
+      "mean": 2258.0,
+      "sd": 965.1
+    },
+    "stage_ms.asr_partial_first_ms": {
+      "n": 5,
+      "median": 663.8,
+      "p25": 645.4,
+      "p75": 976.6,
+      "iqr": 331.2,
+      "min": 631.4,
+      "max": 1182.8,
+      "mean": 781.5,
+      "sd": 230.4
+    },
+    "stage_ms.endpoint_hangover_ms": {
+      "n": 5,
+      "median": 353.1,
+      "p25": 348.5,
+      "p75": 363.1,
+      "iqr": 14.6,
+      "min": 345.5,
+      "max": 365.0,
+      "mean": 355.2,
+      "sd": 7.8
+    },
+    "stage_ms.asr_final_ms": {
+      "n": 5,
+      "median": 882.1,
+      "p25": 448.3,
+      "p75": 945.1,
+      "iqr": 496.8,
+      "min": 394.7,
+      "max": 987.0,
+      "mean": 733.8,
+      "sd": 266.3
+    },
+    "stage_ms.asr_final_dispatch_ms": {
+      "n": 5,
+      "median": 15.5,
+      "p25": 5.5,
+      "p75": 479.2,
+      "iqr": 473.6,
+      "min": 1.0,
+      "max": 919.4,
+      "mean": 197.0,
+      "sd": 404.1
+    },
+    "stage_ms.lm_ttft_ms": {
+      "n": 5,
+      "median": 340.2,
+      "p25": 244.2,
+      "p75": 511.1,
+      "iqr": 266.9,
+      "min": 217.9,
+      "max": 599.9,
+      "mean": 370.2,
+      "sd": 149.6
+    },
+    "stage_ms.lm_sentence_ms": {
+      "n": 5,
+      "median": 127.1,
+      "p25": 103.7,
+      "p75": 229.4,
+      "iqr": 125.7,
+      "min": 93.2,
+      "max": 262.5,
+      "mean": 158.7,
+      "sd": 69.7
+    },
+    "stage_ms.tts_ms": {
+      "n": 5,
+      "median": 259.8,
+      "p25": 148.4,
+      "p75": 717.7,
+      "iqr": 569.3,
+      "min": 143.6,
+      "max": 891.7,
+      "mean": 398.4,
+      "sd": 319.7
+    },
+    "stage_ms.playback_dispatch_ms": {
+      "n": 5,
+      "median": 2.2,
+      "p25": 1.3,
+      "p75": 4.4,
+      "iqr": 3.1,
+      "min": 0.6,
+      "max": 4.4,
+      "mean": 2.7,
+      "sd": 1.7
+    }
+  },
+  "turns": [
+    {
+      "label": "What time do you close on Sunday?",
+      "transcript": "What time do you close on Sunday?",
+      "partial_text": "What?",
+      "reply": "I'm available 24/7.",
+      "lm_tokens": 8,
+      "input_ms": 2360.0,
+      "user_speech_ms": 1700.0,
+      "reply_audio_ms": 2020.0,
+      "gap_ms": 1809.81,
+      "ttfa_ms": 1809.81,
+      "acoustic_gap_ms": 1851.81,
+      "stage_ms": {
+        "asr_partial_first_ms": 770.39,
+        "endpoint_hangover_ms": 364.99,
+        "asr_final_ms": 903.19,
+        "asr_final_dispatch_ms": 38.93,
+        "lm_ttft_ms": 217.88,
+        "lm_sentence_ms": 127.09,
+        "tts_ms": 153.29,
+        "playback_dispatch_ms": 4.43
+      },
+      "n_input_segments": 3,
+      "turn": 0
+    },
+    {
+      "label": "Is there parking near the entrance?",
+      "transcript": "Is there parking near the entrance?",
+      "partial_text": "is",
+      "reply": "No parking available near the entrance.",
+      "lm_tokens": 7,
+      "input_ms": 2300.0,
+      "user_speech_ms": 1640.0,
+      "reply_audio_ms": 2120.0,
+      "gap_ms": 1371.94,
+      "ttfa_ms": 1371.94,
+      "acoustic_gap_ms": 1413.94,
+      "stage_ms": {
+        "asr_partial_first_ms": 631.38,
+        "endpoint_hangover_ms": 361.13,
+        "asr_final_ms": 501.89,
+        "asr_final_dispatch_ms": 1.04,
+        "lm_ttft_ms": 270.46,
+        "lm_sentence_ms": 93.15,
+        "tts_ms": 143.61,
+        "playback_dispatch_ms": 0.6
+      },
+      "n_input_segments": 3,
+      "turn": 1
+    },
+    {
+      "label": "How much does the annual pass cost?",
+      "transcript": "How much does the annual pass cost?",
+      "partial_text": "Come.",
+      "reply": "Annual pass costs vary depending on the location and provider, but it's usually around $20-$50 per year.",
+      "lm_tokens": 23,
+      "input_ms": 2660.0,
+      "user_speech_ms": 2015.0,
+      "reply_audio_ms": 6530.0,
+      "gap_ms": 1614.69,
+      "ttfa_ms": 1614.69,
+      "acoustic_gap_ms": 1656.69,
+      "stage_ms": {
+        "asr_partial_first_ms": 659.4,
+        "endpoint_hangover_ms": 345.53,
+        "asr_final_ms": 394.69,
+        "asr_final_dispatch_ms": 10.04,
+        "lm_ttft_ms": 340.21,
+        "lm_sentence_ms": 262.48,
+        "tts_ms": 259.76,
+        "playback_dispatch_ms": 1.93
+      },
+      "n_input_segments": 5,
+      "turn": 2
+    },
+    {
+      "label": "Can I bring a dog inside?",
+      "transcript": "Can I bring a dog inside?",
+      "partial_text": "Can I...",
+      "reply": "Sorry, dogs are not allowed inside.",
+      "lm_tokens": 8,
+      "input_ms": 2060.0,
+      "user_speech_ms": 1410.0,
+      "reply_audio_ms": 2125.0,
+      "gap_ms": 3763.31,
+      "ttfa_ms": 3763.31,
+      "acoustic_gap_ms": 3805.31,
+      "stage_ms": {
+        "asr_partial_first_ms": 663.78,
+        "endpoint_hangover_ms": 351.48,
+        "asr_final_ms": 882.1,
+        "asr_final_dispatch_ms": 919.4,
+        "lm_ttft_ms": 599.88,
+        "lm_sentence_ms": 114.33,
+        "tts_ms": 891.71,
+        "playback_dispatch_ms": 4.36
+      },
+      "n_input_segments": 2,
+      "turn": 3
+    },
+    {
+      "label": "Where do I pick up my order?",
+      "transcript": "Where do I pick up my order?",
+      "partial_text": "We're...",
+      "reply": "\"Your order will be at your doorstep.\"",
+      "lm_tokens": 10,
+      "input_ms": 2120.0,
+      "user_speech_ms": 1470.0,
+      "reply_audio_ms": 1465.0,
+      "gap_ms": 2520.26,
+      "ttfa_ms": 2520.26,
+      "acoustic_gap_ms": 2562.26,
+      "stage_ms": {
+        "asr_partial_first_ms": 1182.75,
+        "endpoint_hangover_ms": 353.08,
+        "asr_final_ms": 987.04,
+        "asr_final_dispatch_ms": 15.48,
+        "lm_ttft_ms": 422.33,
+        "lm_sentence_ms": 196.37,
+        "tts_ms": 543.77,
+        "playback_dispatch_ms": 2.16
+      },
+      "n_input_segments": 5,
+      "turn": 4
+    }
+  ]
+}
