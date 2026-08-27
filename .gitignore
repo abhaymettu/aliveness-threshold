@@ -12,3 +12,4 @@ stimuli/*.wav
 # analysis agent: regenerable from analysis/simulate.py (seeded)
 SIMULATED_*.jsonl
 analysis/out/
+figures/simulated/
