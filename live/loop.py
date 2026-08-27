@@ -256,10 +256,11 @@ class FastPath:
     ``EARLY_ARM_MS`` the pipeline is started on the audio captured so far; the
     only thing being bet on is that the talker has actually stopped. If they
     resume, the snapshot is stale, the work is thrown away, and the turn falls
-    back to the ordinary path. Since the audio between the snapshot and the
-    endpoint is silence by definition, a *valid* result is bit-identical to what
-    the baseline would have produced -- it just already exists when the
-    endpointer finally fires.
+    back to the ordinary path.
+
+    Not bit-identical to the baseline: the speculative decode sees the same
+    speech but ~270 ms less trailing silence, and whisper can answer differently
+    to that. What is measured (live/STATUS.md) is that it does not answer worse.
     """
 
     def __init__(self, asr: "Asr", lm: "Lm", voice):
@@ -734,6 +735,16 @@ def demo(n_turns: int = 2, **kw) -> dict:
             assert v >= 0, f"turn {t['turn']}: stage {k} = {v}ms, negative"
         assert t["transcript"], f"turn {t['turn']}: empty transcript"
         assert t["reply"], f"turn {t['turn']}: empty reply"
+        # a stage can never be charged more than it actually cost; if it is, the
+        # critical-path walk is charging the listener for somebody else's work
+        for k, w in t["work_ms"].items():
+            assert t["stage_ms"][k + "_ms"] <= w + 1.0, (
+                f"turn {t['turn']}: {k} charged {t['stage_ms'][k + '_ms']}ms of {w}ms of work")
+        # a speculated turn started its decode before the endpointer fired, so
+        # it cannot have waited on dispatch
+        if t["speculated"]:
+            assert t["stage_ms"]["asr_final_dispatch_ms"] == 0, (
+                f"turn {t['turn']}: served speculatively but paid dispatch")
         # the parts must add up to the whole, within one output block
         parts = sum(
             t["stage_ms"][k] for k in
