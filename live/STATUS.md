@@ -8,6 +8,20 @@ the run that produced it is in `live/results/*.json`, one record per turn.
 time-to-first-audio number should be cited. It exists now. These are those
 numbers.
 
+## Setup
+
+Two things beyond `pyproject.toml`'s base deps, both already declared there as
+extras:
+
+    uv pip install sounddevice piper-tts
+    mkdir -p models/piper-live && cd models/piper-live && curl -LO \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx \
+      -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+
+Without the voice the loop falls back to macOS `say` and every gap grows by
+about 2.6 s (see below). Without `sounddevice` there is no output stage at all.
+`models/` is gitignored; no weights are in the repo.
+
 ## What runs
 
     scripts/run_live.py selfcheck            # real turns, asserts every stage timer
