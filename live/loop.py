@@ -35,9 +35,12 @@ identical.
 
 Stages, and which are streaming:
 
-- ASR: faster-whisper ``base.en``, **chunked, not streaming**. A worker thread
-  re-decodes the whole buffer every ``PARTIAL_EVERY_MS`` for partials; the
-  final transcript is one decode of the complete utterance at endpoint.
+- ASR: faster-whisper, **chunked, not streaming**. Two models, as a real
+  streaming stack uses: ``tiny.en`` in a worker thread re-decodes the whole
+  buffer every ``PARTIAL_EVERY_MS`` for partials, and ``base.en`` decodes the
+  complete utterance once at endpoint for the final transcript. The final
+  decode throws away the partial's work -- a true streaming ASR would not, and
+  that waste is inside the reported gap.
 - LM: mlx-lm, token-streamed. Generation stops at the first sentence boundary
   and that sentence is what gets spoken.
 - TTS: ``harness.tts``, unmodified. Whole-utterance, **not streaming** --
@@ -51,6 +54,7 @@ Stages, and which are streaming:
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import statistics
@@ -67,7 +71,8 @@ HANGOVER_MS = 350.0  # trailing silence before the endpointer calls the turn ove
 PARTIAL_EVERY_MS = 500.0  # new audio needed before another partial decode
 BLOCK = 128  # output callback block, 5.8ms at 22050 Hz
 MAX_TOKENS = 48
-ASR_MODEL = "base.en"
+ASR_MODEL = "base.en"        # final transcript
+PARTIAL_MODEL = "tiny.en"    # partials, in the background thread
 LM_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
 SYSTEM = "You are a voice assistant. Reply in one short spoken sentence."
 
@@ -243,11 +248,14 @@ def _mic(q: queue.Queue, stop: threading.Event, box: dict):
     s.close()
 
 
-def capture(source, asr: Asr) -> dict:
+def capture(source, asr: Asr, partial_asr: Asr) -> dict:
     """Run the input stage: stream in, partial-decode in the background, stop on
     the endpointer. Returns the captured audio and the wall-clock landmarks.
 
-    `source` is ``("wav", ndarray)`` or ``("mic", None)``.
+    `source` is ``("wav", ndarray)`` or ``("mic", None)``. `partial_asr` runs in
+    the worker thread; the final decode waits for it to finish rather than
+    running two decoders over the same cores at once, and that wait is timed as
+    ``asr_final_dispatch_ms`` because a listener pays for it.
     """
     q: queue.Queue = queue.Queue()
     box: dict = {}
@@ -274,7 +282,7 @@ def capture(source, asr: Asr) -> dict:
                 time.sleep(0.005)
                 continue
             seen = len(x)
-            txt = asr.text(x)
+            txt = partial_asr.text(x)
             if txt and partial["t"] is None:
                 partial["t"], partial["text"] = time.perf_counter(), txt
 
@@ -328,8 +336,9 @@ def capture(source, asr: Asr) -> dict:
     }
 
 
-def run_turn(source, asr: Asr, lm: Lm, voice, player: Player, label: str = "") -> dict:
-    cap = capture(source, asr)
+def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
+             label: str = "") -> dict:
+    cap = capture(source, asr, partial_asr)
     sentence, t_tok, t_sent, n_tok = lm.first_sentence(cap["transcript"] or "Hello?")
     t_tts0 = time.perf_counter()
     y = voice.synth(sentence)
@@ -404,17 +413,19 @@ def render_prompts(voice, lead_ms=300.0, tail_ms=900.0) -> list[tuple[str, np.nd
 
 def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         tts_backend: str = "auto") -> dict:
+    load0 = os.getloadavg()
     voice = pick_voice(tts_backend)
     # prompts always get the same voice regardless of what the agent speaks
     # with, so ASR-side timings stay comparable across TTS backends
     prompt_voice = pick_voice("auto")
     t0 = time.perf_counter()
-    asr, lm = Asr(), Lm()
+    asr, partial_asr, lm = Asr(), Asr(PARTIAL_MODEL), Lm()
     load_ms = (time.perf_counter() - t0) * 1000.0
     player = Player(device)
     prompts = render_prompts(prompt_voice)
     t0 = time.perf_counter()
     asr.text(prompts[0][1])
+    partial_asr.text(prompts[0][1])
     lm.first_sentence("Hello.")
     voice.synth("Ready.")
     warm_ms = (time.perf_counter() - t0) * 1000.0
@@ -423,7 +434,7 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         for i in range(n_turns):
             text, x = prompts[i % len(prompts)]
             src = ("mic", None) if mic else ("wav", x)
-            t = run_turn(src, asr, lm, voice, player, label=text)
+            t = run_turn(src, asr, partial_asr, lm, voice, player, label=text)
             t["turn"] = i
             turns.append(t)
             print(f"  turn {i:2d}  gap {t['gap_ms']:7.1f}ms  "
@@ -447,7 +458,8 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         "run_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "n_turns": len(turns),
         "input": "microphone (live)" if mic else "TTS-rendered prompt, paced at 1x",
-        "asr": {"model": asr.name, "mode": "chunked, whole-buffer re-decode",
+        "asr": {"final_model": asr.name, "partial_model": partial_asr.name,
+                "mode": "chunked, whole-buffer re-decode",
                 "partial_every_ms": PARTIAL_EVERY_MS},
         "lm": {"model": lm.name, "max_tokens": MAX_TOKENS, "stop": "first sentence"},
         "tts": {"backend": voice.backend, "voice": voice.name, "mode": "whole utterance"},
@@ -455,6 +467,9 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         "output_device": player.device,
         "output_device_latency_ms": round(player.latency_ms, 2),
         "model_load_ms": round(load_ms, 1),
+        # this laptop is shared with other jobs; a CPU-bound ASR stage is only
+        # as fast as the cores it can get, so the load is part of the result
+        "loadavg_start": [round(v, 2) for v in load0],
         "warmup_ms": round(warm_ms, 1),
         "warmup": "one ASR decode, one LM generation and one TTS synthesis are run "
                   "before turn 0, so no measured turn pays a cold graph",
@@ -462,6 +477,7 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         "gap_definition": "agent speech onset - user speech offset, both silence-trimmed, "
                           "measured with harness.audio.segments (merge_gap_ms=30, min_len_ms=20) "
                           "-- the definition in harness/exchange.py",
+        "loadavg_end": [round(v, 2) for v in os.getloadavg()],
         "summary_ms": summary,
         "turns": turns,
     }

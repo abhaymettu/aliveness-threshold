@@ -50,8 +50,10 @@ def main() -> int:
     res = run(n_turns=a.n, out_path=a.out, device=a.device, mic=a.mic, tts_backend=a.tts)
     s = res["summary_ms"]
     print(f"\nn = {res['n_turns']} turns   tts={res['tts']['backend']}  "
-          f"asr={res['asr']['model']}  out={res['output_device']} "
-          f"(+{res['output_device_latency_ms']:.0f}ms device)")
+          f"asr={res['asr']['partial_model']}/{res['asr']['final_model']}  "
+          f"out={res['output_device']} (+{res['output_device_latency_ms']:.0f}ms device)")
+    print(f"loadavg {res['loadavg_start']} -> {res['loadavg_end']}  "
+          f"(this laptop is shared; a CPU-bound ASR stage feels it)")
     print(f"{'':<28}{'median':>9}{'p25':>9}{'p75':>9}{'min':>9}{'max':>9}")
     for k, v in s.items():
         print(f"{k:<28}{v['median']:>9.1f}{v['p25']:>9.1f}{v['p75']:>9.1f}"
