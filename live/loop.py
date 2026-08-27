@@ -324,7 +324,7 @@ def _mic(q: queue.Queue, stop: threading.Event, box: dict):
 
 
 def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
-            fast: "FastPath | None" = None) -> dict:
+            fast: "FastPath | None" = None, arm_ms: float = EARLY_ARM_MS) -> dict:
     """Run the input stage: stream in, partial-decode in the background, stop on
     the endpointer. Returns the captured audio and the wall-clock landmarks.
 
@@ -396,7 +396,7 @@ def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
         elif last_speech is not None and (now - last_speech) * 1000.0 >= hangover:
             t_end, ended = now, True
         elif (fast is not None and not armed and last_speech is not None
-              and (now - last_speech) * 1000.0 >= EARLY_ARM_MS):
+              and (now - last_speech) * 1000.0 >= arm_ms):
             # quiet long enough to bet the turn is over. Partials are worthless
             # from here on and the final decode wants those cores.
             armed = True
@@ -459,10 +459,11 @@ def _critical_path(t0: float, stamps) -> dict:
 
 def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
              label: str = "", hangover: float = HANGOVER_MS,
-             fast: "FastPath | None" = None, ref_offset_ms: float | None = None) -> dict:
+             fast: "FastPath | None" = None, arm_ms: float = EARLY_ARM_MS,
+             ref_offset_ms: float | None = None) -> dict:
     if fast is not None:
         fast.reset()
-    cap = capture(source, asr, partial_asr, hangover=hangover, fast=fast)
+    cap = capture(source, asr, partial_asr, hangover=hangover, fast=fast, arm_ms=arm_ms)
     early = cap["early"]
     if early is not None:
         # LM and TTS already ran inside the hangover; nothing left but to play it
@@ -576,7 +577,11 @@ def render_prompts(voice, lead_ms=300.0, tail_ms=900.0) -> list[tuple[str, np.nd
 
 def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         tts_backend: str = "auto", fast: bool = False,
-        hangover: float = HANGOVER_MS, final_model: str = ASR_MODEL) -> dict:
+        hangover: float = HANGOVER_MS, final_model: str = ASR_MODEL,
+        arm_ms: float | None = None) -> dict:
+    # the speculative pipeline has to start before the endpointer fires or it
+    # buys nothing, so a short hangover drags the arm down with it
+    arm_ms = min(EARLY_ARM_MS, hangover - 50.0) if arm_ms is None else arm_ms
     load0 = os.getloadavg()
     voice = pick_voice(tts_backend)
     # prompts always get the same voice regardless of what the agent speaks
@@ -603,7 +608,7 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
             text, x = prompts[i % len(prompts)]
             src = ("mic", None) if mic else ("wav", x)
             t = run_turn(src, asr, partial_asr, lm, voice, player, label=text,
-                         hangover=hangover, fast=fp,
+                         hangover=hangover, fast=fp, arm_ms=arm_ms,
                          ref_offset_ms=None if mic else ref_off[i % len(prompts)])
             t["turn"] = i
             turns.append(t)
@@ -646,7 +651,7 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         "hangover_ms": hangover,
         "mode": "fast (downstream runs inside the hangover)" if fast else "baseline (serial)",
         "speculation": {
-            "armed_after_silence_ms": EARLY_ARM_MS if fast else None,
+            "armed_after_silence_ms": arm_ms if fast else None,
             "turns_served_speculatively": sum(1 for t in turns if t["speculated"]),
             "pipelines_launched": sum(t["speculations_launched"] for t in turns),
         },

@@ -34,6 +34,8 @@ def _opts(a) -> dict:
         o["hangover"] = a.hangover
     if a.final_model is not None:
         o["final_model"] = a.final_model
+    if a.arm is not None:
+        o["arm_ms"] = a.arm
     return o
 
 
@@ -52,6 +54,8 @@ def main() -> int:
         help="trailing silence before the turn is called over, ms (default 350)")
     sc.add_argument("--final-model", default=None,
         help="faster-whisper model for the final decode (default base.en)")
+    sc.add_argument("--arm", type=float, default=None,
+        help="--fast: silence before the speculative pipeline starts, ms")
     b = sub.add_parser("batch", help="run n turns and write the timing JSON")
     b.add_argument("--n", type=int, default=20)
     b.add_argument("--out", default=None)
@@ -63,6 +67,8 @@ def main() -> int:
         help="trailing silence before the turn is called over, ms (default 350)")
     b.add_argument("--final-model", default=None,
         help="faster-whisper model for the final decode (default base.en)")
+    b.add_argument("--arm", type=float, default=None,
+        help="--fast: silence before the speculative pipeline starts, ms")
     b.add_argument("--mic", action="store_true", help="read the microphone instead of a rendered prompt")
     a = ap.parse_args()
 
