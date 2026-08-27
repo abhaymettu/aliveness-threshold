@@ -8,3 +8,7 @@ stimuli/*.wav
 *.pt
 *.safetensors
 .DS_Store
+
+# analysis agent: regenerable from analysis/simulate.py (seeded)
+SIMULATED_*.jsonl
+analysis/out/
