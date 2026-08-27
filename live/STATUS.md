@@ -53,9 +53,9 @@ about 2.6 s (see below). Without `sounddevice` there is no output stage at all.
 
     scripts/run_live.py selfcheck                       # real turns, asserts every stage timer
     scripts/run_live.py batch --n 20                    # the baseline path, unchanged
-    scripts/run_live.py batch --n 20 --fast             # downstream runs inside the hangover
-    scripts/run_live.py batch --n 20 --fast --final-model tiny.en
-    scripts/run_live.py batch --n 20 --fast --hangover 250 --arm 60
+    scripts/run_live.py batch --n 20 --fast --arm 80   # downstream runs inside the hangover
+    scripts/run_live.py batch --n 20 --fast --arm 80 --final-model tiny.en   # the 386 ms config
+    scripts/run_live.py batch --n 20 --fast --arm 80 --hangover 250
     scripts/run_live.py batch --n 20 --tts say
     scripts/run_live.py batch --n 3 --mic
     scripts/run_live.py devices
@@ -105,11 +105,18 @@ and the TTS after `--arm` ms of silence (default 150; 80 used for every number
 reported here), on the audio captured so far.
 
 **Nothing is guessed.** The only thing being bet on is that the talker has
-stopped. The audio between the snapshot and the endpoint is silence by
-definition, so a claimed result is the same transcript the baseline would have
-produced. If the talker resumes, the snapshot is stale, the work is discarded and
-the turn falls back to the serial path. Across 240 turns in `--fast` mode, 236 were served
+stopped, and the bet is checked rather than assumed: the result is discarded
+unless no speech arrived after the snapshot, in which case the turn falls back to
+the serial path. Across 240 turns in `--fast` mode, 236 were served
 speculatively and 0 produced a false endpoint.
+
+It is *not* bit-identical to the baseline, and the doc should not claim it is.
+The speculative decode sees the same speech but about 270 ms less trailing
+silence, and whisper can answer differently to that. What was measured is that it
+does not answer *worse*: `base.en` scored WER 0.000 over 40 `--fast` turns
+against 0.022 over 100 serial turns, and the only prompt either path ever gets
+wrong is the same one ("Is there parking near the entrance?"), in both
+directions. Same speech in, same quality out, different bytes.
 
 Per stage, medians. `stage_ms` charges each stage only what it added to the
 critical path, so a stage that ran inside the hangover reads 0; `work_ms` (also
@@ -308,11 +315,13 @@ log, the transducer is the next thing to fix, not the software.
    internal pause (65 ms) and would not clear a person's. Treat both the hangover
    and the arm as best cases, and re-measure the false-endpoint column before
    trusting either on a human.
-3. **`--fast` bets that a quiet talker has finished.** The bet is checked, not
-   assumed: the result is discarded unless no speech arrived after the snapshot.
-   When it loses, the turn is *slower* than the baseline, because the wasted
-   decode has to finish before the real one starts. At `--arm 80` it lost 0 times
-   in 180 turns; at `--arm 40` it lost 4 times in 20.
+3. **`--fast` bets that a quiet talker has finished.** When it loses, the turn
+   is *slower* than the baseline, because the wasted decode has to finish before
+   the real one starts. At `--arm 80` it lost 0 times in 180 turns; at
+   `--arm 40` it lost 4 times in 20. `--arm` defaults to 150 ms, which is the
+   safe value for an unknown talker; every number reported here used 80, which
+   is tuned to this prompt set and should be re-derived from a real speaker's
+   pause distribution before being trusted on one.
 4. **The microphone path is only partly verified.** `--mic` opens a real input
    stream, delivers samples, endpoints and produces a transcript. The full
    acoustic loop, speakers into the room into the mic, was **not** verified. Mic
