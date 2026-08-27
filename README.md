@@ -307,10 +307,12 @@ nowhere else: the re-render counts and error figures are in
 file. Nothing here is estimated, rounded from memory, or carried over from an
 earlier draft.
 
-`analysis/test_analysis.py` is the check that makes the headline mean anything:
-it generates a fixture with a real latency response baked in and requires the
-estimators to find it (last run recovered −2.37 points per second
-[−2.43, −2.32] where the real ratings give +0.16 [−0.13, +0.47]), then
-requires a shuffled-cue null to come back null. If the analysis could not see
-a timing effect that is there by construction, the flat real result would mean
-nothing and that test fails loudly.
+`analysis/test_analysis.py` is the check that makes the headline mean anything.
+It generates a fixture with a real latency response baked in and asserts that
+the same estimators, unchanged, recover a clearly negative aliveness slope
+whose interval clears zero — then asserts that a shuffled-cue null comes back
+null. If the analysis could not see a timing effect that is there by
+construction, the flat result on the real ratings would mean nothing, and that
+test fails loudly instead. Its recovered values are deliberately not quoted
+here: they come from a `SIMULATED_*` fixture, and no number computed from one
+appears anywhere in this README or in `figures/`. Run the test to see them.
