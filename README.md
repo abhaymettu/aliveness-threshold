@@ -169,6 +169,12 @@ decline.
 `harness/STATUS.md` lists 305/320/510/585 under a heading that calls them
 minimum latencies. Those are the cue *durations*. The floors are 150 ms higher.
 
+The stub that rendered the rated audio has its own, slightly different floors
+(100 ms onset + duration + an 80 ms tail, giving 460/560/760/730 ms) and it
+*clamps* the gap open to reach them instead of refusing. Different mechanism,
+same 36 clips, same conclusion: at nominal 0/200/400 a cued clip is not a
+matched comparison for an uncued one, under either backend.
+
 ## Re-rendering through the real harness
 
 `analysis/rerender.py` runs all 90 design cells through `harness/` and writes
@@ -292,9 +298,14 @@ lists the 90-clip stub set, 36 of which no longer have audio on disk.
 .venv/bin/python analysis/test_analysis.py      # positive + null controls
 ```
 
-Every number in this README is rendered from `analysis/out/results.json` by
-`analysis/render_readme.py`, which exits rather than run on simulated input.
-None of them is typed by hand.
+Every number in the results block above is rendered from
+`analysis/out/results.json` by `analysis/render_readme.py`, which exits rather
+than run on simulated input. Numbers in the prose come from two places and
+nowhere else: the re-render counts and error figures are in
+`analysis/rerender.jsonl`, and the −1.35 in limitation 4 is
+`latency_response_cued_matched.alive.values.slope_per_s` in the same results
+file. Nothing here is estimated, rounded from memory, or carried over from an
+earlier draft.
 
 `analysis/test_analysis.py` is the check that makes the headline mean anything:
 it generates a fixture with a real latency response baked in and requires the
