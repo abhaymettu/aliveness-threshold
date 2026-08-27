@@ -67,6 +67,9 @@ def main():
             "wav_path": rel,
             "actual_gap_ms": res["actual_gap_ms"],
             "cue_onset_ms": res["cue_onset_ms"],
+            # CONTRACT.md asks for this explicitly: without it the cost side
+            # of the cost/benefit table is unreported. 0.0 when cue is none.
+            "cue_dur_ms": res["component_timings"]["cue_ms"],
             "component_timings": res["component_timings"],
             "synth_backend": backend,
         })

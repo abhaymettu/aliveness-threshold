@@ -76,11 +76,14 @@ def main():
             f"{r['stim_id']} gap shrank below nominal"
         if r["cue"] == "none":
             assert r["cue_onset_ms"] is None
+            assert r["cue_dur_ms"] == 0.0
             assert r["actual_gap_ms"] == float(r["latency_ms"]), \
                 f"{r['stim_id']} has no cue but a padded gap"
         else:
             assert r["cue_onset_ms"] is not None
             t = r["component_timings"]
+            assert r["cue_dur_ms"] == t["cue_ms"], f"{r['stim_id']} cue_dur_ms drift"
+            assert r["cue_dur_ms"] > 0, f"{r['stim_id']} claims a cue but no audio"
             assert r["cue_onset_ms"] + t["cue_ms"] <= r["actual_gap_ms"], \
                 f"{r['stim_id']} cue spills past the gap into the response"
 
