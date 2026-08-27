@@ -1,0 +1,24 @@
+[project]
+name = "aliveness-threshold"
+version = "0.1.0"
+description = "Exchange rate between non-verbal cues and tolerated latency in spoken conversation"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "soundfile>=0.13",
+    "faster-whisper>=1.0",
+    "mlx-lm>=0.20; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
+[project.optional-dependencies]
+# piper-tts is preferred for TTS; macOS `say` is the documented fallback.
+piper = ["piper-tts>=1.2"]
+# real-time playback with a measurable first-block timestamp; falls back to afplay
+audio = ["sounddevice>=0.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["harness"]
