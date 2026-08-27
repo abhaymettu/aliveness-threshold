@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Does it feel alive?</title>
+<style>
+:root{
+  --bg:#fbfaf8; --fg:#17161a; --dim:#6b6873; --line:#e2ded7;
+  --card:#fff; --accent:#3a5bd9; --accent-fg:#fff; --warm:#f0ece4;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#141317;--fg:#eceaf0;--dim:#918d9c;--line:#2b2932;
+        --card:#1c1b21;--accent:#7d94f5;--accent-fg:#12111a;--warm:#232128;}
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--fg);
+  font:16px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  display:flex; justify-content:center; padding:24px 16px 64px;
+  -webkit-font-smoothing:antialiased;
+}
+main{width:100%;max-width:620px}
+h1{font-size:26px;line-height:1.2;margin:0 0 4px;letter-spacing:-.02em}
+h2{font-size:15px;margin:0 0 10px;font-weight:600}
+p{margin:0 0 14px}
+.dim{color:var(--dim)}
+.small{font-size:13.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+button{font:inherit;cursor:pointer;border-radius:9px;border:1px solid var(--line);
+  background:var(--card);color:var(--fg);padding:9px 15px}
+button:hover{border-color:var(--dim)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent;font-weight:600}
+.primary:hover{filter:brightness(1.08);border-color:transparent}
+
+/* progress */
+.bar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin:0 0 22px}
+.bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .25s}
+
+/* the player */
+.play{
+  width:100%;display:flex;align-items:center;gap:14px;justify-content:center;
+  padding:26px;border-radius:12px;background:var(--warm);border:1px solid var(--line);
+  font-size:17px;font-weight:600;
+}
+.play .ico{font-size:22px;line-height:1}
+.play[data-state="playing"]{border-color:var(--accent)}
+
+/* scales */
+fieldset{border:0;padding:0;margin:22px 0 0}
+legend{padding:0;font-weight:600;font-size:15px;margin-bottom:2px}
+.anchors{display:flex;justify-content:space-between;gap:10px;margin:8px 2px 6px}
+.anchors span{font-size:12.5px;color:var(--dim);max-width:46%}
+.anchors span:last-child{text-align:right}
+.scale{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.scale label{position:relative}
+.scale input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.scale span{display:block;text-align:center;padding:11px 0;border:1px solid var(--line);
+  border-radius:9px;background:var(--card);font-variant-numeric:tabular-nums;
+  transition:background .12s,border-color .12s}
+.scale input:hover+span{border-color:var(--dim)}
+.scale input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
+.scale input:checked+span{background:var(--accent);color:var(--accent-fg);border-color:transparent;font-weight:600}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.two label{position:relative}
+.two input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.two span{display:block;text-align:center;padding:11px 0;border:1px solid var(--line);border-radius:9px}
+.two input:checked+span{background:var(--accent);color:var(--accent-fg);border-color:transparent;font-weight:600}
+
+.row{display:flex;gap:10px;align-items:center;margin-top:26px;flex-wrap:wrap}
+.hide{display:none!important}
+kbd{font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--line);
+  border-bottom-width:2px;border-radius:5px;padding:1px 5px;background:var(--warm)}
+ul{margin:0 0 14px;padding-left:20px}
+li{margin-bottom:5px}
+.err{color:#c0392b;font-size:13.5px;margin-top:10px}
+@media (prefers-color-scheme:dark){.err{color:#ff8b7a}}
+textarea{width:100%;height:130px;font:12px/1.5 ui-monospace,Menlo,monospace;
+  background:var(--warm);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:10px}
+</style>
+</head>
+<body>
+<main>
+
+<!-- ───────────────────────── intro ───────────────────────── -->
+<section id="intro">
+  <h1>Does it feel alive?</h1>
+  <p class="dim">A short listening study about how long a machine is allowed to take.</p>
+  <div class="card">
+    <p>You'll hear <b id="nClips">30</b> short clips. In each one a person asks a
+    home assistant something and the assistant answers. Sometimes it answers
+    straight away, sometimes it takes a while, and sometimes it makes a small
+    sound before it speaks.</p>
+    <p>After each clip, three quick judgements. There are no right answers —
+    we want your gut reaction, not a considered one.</p>
+    <ul class="small dim">
+      <li>Headphones help, but aren't required.</li>
+      <li>Takes about 8 minutes.</li>
+      <li>Nothing is uploaded. Your answers stay in this browser until you
+          download them and send them back yourself.</li>
+    </ul>
+    <div class="row">
+      <button class="primary" id="start">Start</button>
+      <span class="small dim" id="resumeNote"></span>
+    </div>
+    <p class="err hide" id="introErr"></p>
+  </div>
+</section>
+
+<!-- ───────────────────────── task ───────────────────────── -->
+<section id="task" class="hide">
+  <div class="bar"><i id="prog"></i></div>
+  <div class="card">
+    <p class="small dim" style="margin-bottom:12px">
+      Clip <b id="idx">1</b> of <b id="total">30</b>
+      &nbsp;·&nbsp; <kbd>space</kbd> replay
+    </p>
+
+    <button class="play" id="play" data-state="idle">
+      <span class="ico">▶</span><span id="playLabel">Play the clip</span>
+    </button>
+    <audio id="audio" preload="auto"></audio>
+
+    <div id="questions" class="hide">
+      <fieldset>
+        <legend>How alive did it feel?</legend>
+        <div class="anchors"><span>1 — a dead machine playing back a file</span>
+                             <span>7 — something actually there with you</span></div>
+        <div class="scale" id="alive"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Did it seem broken?</legend>
+        <div class="anchors"><span>1 — nothing seemed wrong</span>
+                             <span>7 — stuck, crashed, or broken</span></div>
+        <div class="scale" id="broken"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Would you wait like that again?</legend>
+        <div class="anchors"><span class="small">To get an answer like that one.</span><span></span></div>
+        <div class="two" id="wait">
+          <label><input type="radio" name="wait" value="1"><span>Yes</span></label>
+          <label><input type="radio" name="wait" value="0"><span>No</span></label>
+        </div>
+      </fieldset>
+
+      <div class="row">
+        <button class="primary" id="next" disabled>Next clip</button>
+        <span class="small dim" id="hint">Answer all three to continue.</span>
+      </div>
+    </div>
+    <p class="err hide" id="taskErr"></p>
+  </div>
+</section>
+
+<!-- ───────────────────────── done ───────────────────────── -->
+<section id="done" class="hide">
+  <h1>Done — thank you.</h1>
+  <div class="card">
+    <p>You rated <b id="nDone">0</b> clips. Send the file back and it goes
+      straight into the dataset.</p>
+    <div class="row" style="margin-top:4px">
+      <button class="primary" id="dl">Download my ratings</button>
+      <button id="copy">Copy instead</button>
+      <button id="more">Rate another 30</button>
+    </div>
+    <p class="small dim" style="margin-top:18px">Your rater id is
+      <b id="rid"></b>. It's random and isn't tied to you.</p>
+    <textarea id="out" readonly></textarea>
+  </div>
+</section>
+
+</main>
+
+<script src="stimuli.js"></script>
+<script>
+"use strict";
+(function(){
+
+// Audio lives outside the repo checkout when this page is hosted, so allow
+// ?audio=https://example.com/clips/ to point somewhere else. Default is the
+// repo layout: web/rate.html -> ../stimuli/<id>.wav
+var AUDIO_BASE = new URLSearchParams(location.search).get("audio") || "../";
+var LS = "aliveness.v1";
+var $ = function(id){ return document.getElementById(id); };
+
+var S = window.STIMULI || [];
+var state = null;
+
+// ── sampling ─────────────────────────────────────────────────────────────
+// One clip per (latency x cue) cell, so every listener is a complete
+// factorial replicate rather than a random dusting across the design.
+function sample(){
+  var cells = {};
+  S.forEach(function(s){
+    var k = s.latency_ms + "|" + s.cue;
+    (cells[k] = cells[k] || []).push(s);
+  });
+  var picked = Object.keys(cells).map(function(k){
+    var c = cells[k];
+    return c[Math.floor(Math.random()*c.length)];
+  });
+  for (var i = picked.length-1; i > 0; i--){          // Fisher-Yates
+    var j = Math.floor(Math.random()*(i+1));
+    var t = picked[i]; picked[i] = picked[j]; picked[j] = t;
+  }
+  return picked.map(function(s){ return s.stim_id; });
+}
+
+function newSession(){
+  return {
+    rater_id: "human-" + Math.random().toString(36).slice(2,8) +
+              Math.random().toString(36).slice(2,6),
+    order: sample(), i: 0, rows: []
+  };
+}
+
+function save(){ try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){} }
+function load(){
+  try{ var s = JSON.parse(localStorage.getItem(LS)); return (s && s.order) ? s : null; }
+  catch(e){ return null; }
+}
+
+// ── scale rendering ──────────────────────────────────────────────────────
+function buildScale(el, name){
+  el.innerHTML = "";
+  for (var n = 1; n <= 7; n++){
+    var l = document.createElement("label");
+    l.innerHTML = '<input type="radio" name="'+name+'" value="'+n+'"><span>'+n+'</span>';
+    el.appendChild(l);
+  }
+}
+function picked(name){
+  var el = document.querySelector('input[name="'+name+'"]:checked');
+  return el ? el.value : null;
+}
+function clearPicks(){
+  Array.prototype.forEach.call(document.querySelectorAll('input[type=radio]'),
+    function(r){ r.checked = false; });
+}
+
+// ── the clip ─────────────────────────────────────────────────────────────
+var audio = $("audio"), played = false;
+
+function byId(id){
+  for (var i=0;i<S.length;i++) if (S[i].stim_id === id) return S[i];
+  return null;
+}
+
+function show(){
+  var s = byId(state.order[state.i]);
+  if (!s) return finish();
+  played = false;
+  audio.src = AUDIO_BASE + s.wav_path;
+  $("idx").textContent = state.i + 1;
+  $("total").textContent = state.order.length;
+  $("prog").style.width = (100*state.i/state.order.length) + "%";
+  $("questions").classList.add("hide");
+  $("playLabel").textContent = "Play the clip";
+  $("play").dataset.state = "idle";
+  $("play").querySelector(".ico").textContent = "▶";
+  clearPicks();
+  $("next").disabled = true;
+  $("hint").textContent = "Answer all three to continue.";
+  $("taskErr").classList.add("hide");
+}
+
+function play(){
+  $("play").dataset.state = "playing";
+  $("play").querySelector(".ico").textContent = "❚❚";
+  $("playLabel").textContent = "Playing…";
+  audio.currentTime = 0;
+  var p = audio.play();
+  if (p && p.catch) p.catch(function(err){
+    $("taskErr").textContent = "Couldn't play that clip (" + err.name +
+      "). If you opened this file directly, the audio folder has to sit next " +
+      "to it — or pass ?audio=<url> in the address bar.";
+    $("taskErr").classList.remove("hide");
+    reveal();  // don't trap someone whose audio is broken
+  });
+}
+
+function reveal(){
+  played = true;
+  $("play").dataset.state = "idle";
+  $("play").querySelector(".ico").textContent = "↻";
+  $("playLabel").textContent = "Play again";
+  $("questions").classList.remove("hide");
+}
+
+audio.addEventListener("ended", reveal);
+audio.addEventListener("error", function(){
+  $("taskErr").textContent = "That clip didn't load. Skipping it rather than " +
+    "asking you to rate silence.";
+  $("taskErr").classList.remove("hide");
+  state.i++; save(); setTimeout(show, 900);
+});
+$("play").addEventListener("click", play);
+
+function checkComplete(){
+  var ok = picked("alive") && picked("broken") && picked("wait");
+  $("next").disabled = !ok;
+  if (ok) $("hint").textContent = "";
+}
+document.addEventListener("change", function(e){
+  if (e.target && e.target.type === "radio") checkComplete();
+});
+
+$("next").addEventListener("click", function(){
+  if ($("next").disabled) return;
+  state.rows.push({
+    stim_id: state.order[state.i],
+    rater_id: state.rater_id,
+    rater_type: "human",
+    rater_modality: "audio",
+    aliveness_1_7: +picked("alive"),
+    broken_1_7: +picked("broken"),
+    would_wait_again_bool: picked("wait") === "1",
+    ts: new Date().toISOString()
+  });
+  state.i++;
+  save();
+  if (state.i >= state.order.length) finish(); else show();
+});
+
+// space replays, 1-7 fills whichever scale is still empty
+document.addEventListener("keydown", function(e){
+  if ($("task").classList.contains("hide")) return;
+  if (e.target.tagName === "TEXTAREA") return;
+  if (e.code === "Space"){ e.preventDefault(); play(); return; }
+  if (e.key === "Enter" && !$("next").disabled){ $("next").click(); return; }
+  if (!played) return;
+  var n = parseInt(e.key, 10);
+  if (n >= 1 && n <= 7){
+    var name = !picked("alive") ? "alive" : (!picked("broken") ? "broken" : null);
+    if (!name) return;
+    var el = document.querySelector('input[name="'+name+'"][value="'+n+'"]');
+    if (el){ el.checked = true; checkComplete(); }
+  }
+  if (e.key === "y" || e.key === "n"){
+    var w = document.querySelector('input[name="wait"][value="'+(e.key==="y"?1:0)+'"]');
+    if (w){ w.checked = true; checkComplete(); }
+  }
+});
+
+// ── finish ───────────────────────────────────────────────────────────────
+function jsonl(){
+  return state.rows.map(function(r){ return JSON.stringify(r); }).join("\n") + "\n";
+}
+function finish(){
+  $("prog").style.width = "100%";
+  $("task").classList.add("hide");
+  $("done").classList.remove("hide");
+  $("nDone").textContent = state.rows.length;
+  $("rid").textContent = state.rater_id;
+  $("out").value = jsonl();
+  save();
+}
+$("dl").addEventListener("click", function(){
+  var b = new Blob([jsonl()], {type:"application/x-ndjson"});
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(b);
+  a.download = "ratings-" + state.rater_id + ".jsonl";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+});
+$("copy").addEventListener("click", function(){
+  $("out").select();
+  try{ document.execCommand("copy"); $("copy").textContent = "Copied"; }
+  catch(e){ $("copy").textContent = "Select it and copy"; }
+});
+$("more").addEventListener("click", function(){
+  var keep = state.rows, rid = state.rater_id;
+  state = newSession();
+  state.rater_id = rid; state.rows = keep;   // same person, second block
+  save();
+  $("done").classList.add("hide");
+  $("task").classList.remove("hide");
+  show();
+});
+
+// ── boot ─────────────────────────────────────────────────────────────────
+buildScale($("alive"), "alive");
+buildScale($("broken"), "broken");
+
+if (!S.length){
+  $("introErr").textContent = "stimuli.js didn't load. Keep rate.html, " +
+    "stimuli.js and the audio folder together.";
+  $("introErr").classList.remove("hide");
+  $("start").disabled = true;
+} else {
+  var cells = {};
+  S.forEach(function(s){ cells[s.latency_ms + "|" + s.cue] = 1; });
+  $("nClips").textContent = Object.keys(cells).length;
+  var prev = load();
+  if (prev && prev.i > 0 && prev.i < prev.order.length){
+    $("resumeNote").textContent = "or pick up where you left off (" +
+      prev.i + " done)";
+    $("start").textContent = "Resume";
+    state = prev;
+  }
+}
+
+$("start").addEventListener("click", function(){
+  if (!state) { state = newSession(); save(); }
+  $("intro").classList.add("hide");
+  $("task").classList.remove("hide");
+  show();
+});
+
+})();
+</script>
+</body>
+</html>
