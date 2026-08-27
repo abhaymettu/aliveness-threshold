@@ -68,6 +68,11 @@ from harness import audio, tts
 
 CHUNK_MS = 20.0  # input chunk granularity
 HANGOVER_MS = 350.0  # trailing silence before the endpointer calls the turn over
+# --fast only: how long the input must be quiet before the whole downstream
+# pipeline is speculatively started on the audio so far. Strictly below the
+# hangover -- the difference is the head start. Too small and every inter-word
+# pause launches a decode that gets thrown away.
+EARLY_ARM_MS = 150.0
 PARTIAL_EVERY_MS = 500.0  # new audio needed before another partial decode
 MAX_TURN_MS = 20000.0  # hard stop on a turn that never falls silent (mic path)
 # Live endpointing only. audio.speech_mask's -55 dBFS floor is right for a
@@ -224,6 +229,69 @@ class Player:
         self.stream.close()
 
 
+class FastPath:
+    """Run the final decode, the LM and the TTS *during* the endpointer's
+    hangover instead of after it.
+
+    Nothing here is guessed. The moment the input has been quiet for
+    ``EARLY_ARM_MS`` the pipeline is started on the audio captured so far; the
+    only thing being bet on is that the talker has actually stopped. If they
+    resume, the snapshot is stale, the work is thrown away, and the turn falls
+    back to the ordinary path. Since the audio between the snapshot and the
+    endpoint is silence by definition, a *valid* result is bit-identical to what
+    the baseline would have produced -- it just already exists when the
+    endpointer finally fires.
+    """
+
+    def __init__(self, asr: "Asr", lm: "Lm", voice):
+        self.asr, self.lm, self.voice = asr, lm, voice
+        self.thread: threading.Thread | None = None
+        self.seq = -1          # speech counter at the moment of arming
+        self.out: dict | None = None
+        self.launches = 0
+
+    def arm(self, x: np.ndarray, seq: int) -> None:
+        """Start the pipeline on `x`. No-op if one is already in flight."""
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.seq, self.out, self.launches = seq, None, self.launches + 1
+        self.thread = threading.Thread(target=self._work, args=(x, seq), daemon=True)
+        self.thread.start()
+
+    def _work(self, x: np.ndarray, seq: int) -> None:
+        t_final0 = time.perf_counter()
+        text = self.asr.text(x)
+        t_final = time.perf_counter()
+        sentence, t_tok, t_sent, n_tok = self.lm.first_sentence(text or "Hello?")
+        t_tts0 = time.perf_counter()
+        y = self.voice.synth(sentence)
+        out = {
+            "seq": seq, "transcript": text, "sentence": sentence, "n_tok": n_tok,
+            "audio": y, "t_final0": t_final0, "t_final": t_final, "t_tok": t_tok,
+            "t_sent": t_sent, "t_tts0": t_tts0, "t_tts": time.perf_counter(),
+        }
+        if self.seq == seq:  # still the newest arming; a later one supersedes us
+            self.out = out
+
+    def claim(self, seq: int, timeout: float = 30.0) -> dict | None:
+        """The finished pipeline, or None if the snapshot went stale.
+
+        Stale means speech arrived after the snapshot, so the snapshot is not
+        the whole utterance and its transcript would be a truncation.
+        """
+        if self.thread is None or self.seq != seq:
+            return None
+        self.thread.join(timeout)
+        return self.out if self.out and self.out["seq"] == seq else None
+
+    def reset(self) -> None:
+        """New turn. Wait out any speculation the last turn abandoned rather
+        than letting it steal cores from this one."""
+        if self.thread is not None:
+            self.thread.join(timeout=30.0)
+        self.thread, self.seq, self.out, self.launches = None, -1, None, 0
+
+
 def _pace_wav(x: np.ndarray, q: queue.Queue, t0: float) -> None:
     """Feed `x` into `q` at 1x real time. Sample k is delivered at t0 + k/SR."""
     n = audio.samples(CHUNK_MS)
@@ -255,7 +323,8 @@ def _mic(q: queue.Queue, stop: threading.Event, box: dict):
     s.close()
 
 
-def capture(source, asr: Asr, partial_asr: Asr) -> dict:
+def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
+            fast: "FastPath | None" = None) -> dict:
     """Run the input stage: stream in, partial-decode in the background, stop on
     the endpointer. Returns the captured audio and the wall-clock landmarks.
 
@@ -263,6 +332,10 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
     the worker thread; the final decode waits for it to finish rather than
     running two decoders over the same cores at once, and that wait is timed as
     ``asr_final_dispatch_ms`` because a listener pays for it.
+
+    With `fast`, the downstream pipeline is armed after ``EARLY_ARM_MS`` of
+    silence so it runs inside the hangover. `fast=None` is the baseline path,
+    byte for byte.
     """
     q: queue.Queue = queue.Queue()
     box: dict = {}
@@ -299,6 +372,7 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
     # live endpointer: chunk RMS against the loudest chunk so far, the same
     # -35dB relative rule audio.speech_mask uses, over a stricter floor
     peak, last_speech, t_end, ended = 0.0, None, None, False
+    speech_seq, armed = 0, False
     deadline = time.perf_counter() + MAX_TURN_MS / 1000.0
     while not ended:
         if time.perf_counter() > deadline:
@@ -317,9 +391,19 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
         r = float(np.sqrt((c.astype(np.float64) ** 2).mean()))
         peak = max(peak, r)
         if r >= peak * 10 ** (-35.0 / 20.0) and r >= 10 ** (LIVE_FLOOR_DBFS / 20.0):
-            last_speech = now
-        elif last_speech is not None and (now - last_speech) * 1000.0 >= HANGOVER_MS:
+            last_speech, armed = now, False
+            speech_seq += 1
+        elif last_speech is not None and (now - last_speech) * 1000.0 >= hangover:
             t_end, ended = now, True
+        elif (fast is not None and not armed and last_speech is not None
+              and (now - last_speech) * 1000.0 >= EARLY_ARM_MS):
+            # quiet long enough to bet the turn is over. Partials are worthless
+            # from here on and the final decode wants those cores.
+            armed = True
+            stop_partials.set()
+            with lock:
+                snap = np.concatenate(chunks)
+            fast.arm(snap, speech_seq)
 
     stop_mic.set()
     stop_partials.set()
@@ -327,9 +411,13 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
     x = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
 
     t_stream0 = box["t0"]
-    t_final0 = time.perf_counter()
-    final = asr.text(x)
-    t_final = time.perf_counter()
+    early = fast.claim(speech_seq) if fast is not None else None
+    if early is not None:
+        t_final0, final, t_final = early["t_final0"], early["transcript"], early["t_final"]
+    else:
+        t_final0 = time.perf_counter()
+        final = asr.text(x)
+        t_final = time.perf_counter()
 
     segs = audio.segments(x, **SEG_KW)
     if not segs:
@@ -347,16 +435,45 @@ def capture(source, asr: Asr, partial_asr: Asr) -> dict:
         "transcript": final,
         "input_ms": audio.millis(len(x)),
         "n_segments": len(segs),
+        "early": early,
+        "early_launches": fast.launches if fast is not None else 0,
     }
 
 
+def _critical_path(t0: float, stamps) -> dict:
+    """Non-overlapping stage breakdown from `stamps`, a list of (name, time).
+
+    Each stage is charged only the time it added *beyond everything already
+    elapsed*, so work that ran in parallel with an earlier stage reads 0 -- which
+    is what it costs the listener. The stages therefore still sum exactly to the
+    last stamp minus `t0`, i.e. to the gap, which is what the self-check asserts.
+    On a strictly serial run (the baseline) this is the plain difference and the
+    numbers are unchanged.
+    """
+    out, prev = {}, t0
+    for name, t in stamps:
+        prev, before = max(prev, t), prev
+        out[name] = round((prev - before) * 1000.0, 2)
+    return out
+
+
 def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
-             label: str = "") -> dict:
-    cap = capture(source, asr, partial_asr)
-    sentence, t_tok, t_sent, n_tok = lm.first_sentence(cap["transcript"] or "Hello?")
-    t_tts0 = time.perf_counter()
-    y = voice.synth(sentence)
-    t_tts = time.perf_counter()
+             label: str = "", hangover: float = HANGOVER_MS,
+             fast: "FastPath | None" = None, ref_offset_ms: float | None = None) -> dict:
+    if fast is not None:
+        fast.reset()
+    cap = capture(source, asr, partial_asr, hangover=hangover, fast=fast)
+    early = cap["early"]
+    if early is not None:
+        # LM and TTS already ran inside the hangover; nothing left but to play it
+        sentence, t_tok, t_sent, n_tok = (
+            early["sentence"], early["t_tok"], early["t_sent"], early["n_tok"])
+        t_tts0, y, t_tts = early["t_tts0"], early["audio"], early["t_tts"]
+    else:
+        sentence, t_tok, t_sent, n_tok = lm.first_sentence(cap["transcript"] or "Hello?")
+        t_tts0 = time.perf_counter()
+        y = voice.synth(sentence)
+        t_tts = time.perf_counter()
     if len(y) == 0:
         raise RuntimeError(f"TTS produced no audio for {sentence!r}")
     player.play(y)
@@ -370,17 +487,22 @@ def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
 
     off = cap["t_speech_offset"]
     ms = lambda a, b: round((a - b) * 1000.0, 2)  # noqa: E731
-    stage = {
-        "asr_partial_first_ms": ms(cap["t_first_partial"], cap["t_stream0"])
-        if cap["t_first_partial"] else None,
-        "endpoint_hangover_ms": ms(cap["t_endpoint"], off),
-        "asr_final_ms": ms(cap["t_final"], cap["t_final0"]),
-        "asr_final_dispatch_ms": ms(cap["t_final0"], cap["t_endpoint"]),
-        "lm_ttft_ms": ms(t_tok, cap["t_final"]),
-        "lm_sentence_ms": ms(t_sent, t_tok),
-        "tts_ms": ms(t_tts, t_tts0),
-        "playback_dispatch_ms": ms(t_out, t_tts),
-    }
+    stage = _critical_path(off, [
+        ("endpoint_hangover_ms", cap["t_endpoint"]),
+        ("asr_final_dispatch_ms", cap["t_final0"]),
+        ("asr_final_ms", cap["t_final"]),
+        ("lm_ttft_ms", t_tok),
+        ("lm_sentence_ms", t_sent),
+        ("tts_ms", t_tts),
+        ("playback_dispatch_ms", t_out),
+    ])
+    stage["asr_partial_first_ms"] = (
+        ms(cap["t_first_partial"], cap["t_stream0"]) if cap["t_first_partial"] else None)
+    # a false endpoint is the endpointer calling the turn over while the talker
+    # is still going: the captured speech offset lands before the prompt's real
+    # one. Only knowable when the input is a rendered prompt we measured first.
+    off_ms = ms(off, cap["t_stream0"])
+    truncated = bool(ref_offset_ms is not None and off_ms < ref_offset_ms - 50.0)
     return {
         "label": label,
         "transcript": cap["transcript"],
@@ -396,7 +518,34 @@ def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
         "acoustic_gap_ms": round(ms(t_out, off) + player.latency_ms, 2),
         "stage_ms": stage,
         "n_input_segments": cap["n_segments"],
+        "speculated": early is not None,
+        "speculations_launched": cap["early_launches"],
+        "speech_offset_ms": round(off_ms, 1),
+        "ref_speech_offset_ms": ref_offset_ms,
+        "truncated": truncated,
+        "wer": _wer(label, cap["transcript"]) if label else None,
     }
+
+
+def _wer(ref: str, hyp: str) -> float:
+    """Word error rate, lowercased and stripped of punctuation.
+
+    Only meaningful because the prompt text is known exactly: it is how a
+    smaller/faster final decode, or a hangover short enough to cut the talker
+    off, gets charged for what it costs in accuracy rather than only credited
+    for what it saves in milliseconds.
+    """
+    w = lambda s: re.sub(r"[^a-z0-9' ]", " ", s.lower()).split()  # noqa: E731
+    r, h = w(ref), w(hyp)
+    if not r:
+        return 0.0
+    prev = list(range(len(h) + 1))
+    for i, rw in enumerate(r, 1):
+        cur = [i]
+        for j, hw in enumerate(h, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (rw != hw)))
+        prev = cur
+    return round(prev[-1] / len(r), 4)
 
 
 def _stats(v: list[float]) -> dict:
@@ -426,17 +575,22 @@ def render_prompts(voice, lead_ms=300.0, tail_ms=900.0) -> list[tuple[str, np.nd
 
 
 def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
-        tts_backend: str = "auto") -> dict:
+        tts_backend: str = "auto", fast: bool = False,
+        hangover: float = HANGOVER_MS, final_model: str = ASR_MODEL) -> dict:
     load0 = os.getloadavg()
     voice = pick_voice(tts_backend)
     # prompts always get the same voice regardless of what the agent speaks
     # with, so ASR-side timings stay comparable across TTS backends
     prompt_voice = pick_voice("auto")
     t0 = time.perf_counter()
-    asr, partial_asr, lm = Asr(), Asr(PARTIAL_MODEL), Lm()
+    asr, partial_asr, lm = Asr(final_model), Asr(PARTIAL_MODEL), Lm()
     load_ms = (time.perf_counter() - t0) * 1000.0
     player = Player(device)
     prompts = render_prompts(prompt_voice)
+    # where each prompt's speech actually ends, measured the same way the gap
+    # is, so a hangover short enough to cut the talker off is detectable
+    ref_off = [float(audio.segments(x, **SEG_KW)[-1][1]) for _, x in prompts]
+    fp = FastPath(asr, lm, voice) if fast else None
     t0 = time.perf_counter()
     asr.text(prompts[0][1])
     partial_asr.text(prompts[0][1])
@@ -448,7 +602,9 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         for i in range(n_turns):
             text, x = prompts[i % len(prompts)]
             src = ("mic", None) if mic else ("wav", x)
-            t = run_turn(src, asr, partial_asr, lm, voice, player, label=text)
+            t = run_turn(src, asr, partial_asr, lm, voice, player, label=text,
+                         hangover=hangover, fast=fp,
+                         ref_offset_ms=None if mic else ref_off[i % len(prompts)])
             t["turn"] = i
             turns.append(t)
             print(f"  turn {i:2d}  gap {t['gap_ms']:7.1f}ms  "
@@ -487,7 +643,22 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
         "warmup_ms": round(warm_ms, 1),
         "warmup": "one ASR decode, one LM generation and one TTS synthesis are run "
                   "before turn 0, so no measured turn pays a cold graph",
-        "hangover_ms": HANGOVER_MS,
+        "hangover_ms": hangover,
+        "mode": "fast (downstream runs inside the hangover)" if fast else "baseline (serial)",
+        "speculation": {
+            "armed_after_silence_ms": EARLY_ARM_MS if fast else None,
+            "turns_served_speculatively": sum(1 for t in turns if t["speculated"]),
+            "pipelines_launched": sum(t["speculations_launched"] for t in turns),
+        },
+        # a shorter hangover that cuts the talker off is not a faster loop, so
+        # these travel with every gap number and are never reported apart from it
+        "endpointing": {
+            "false_endpoints": sum(1 for t in turns if t["truncated"]),
+            "n": len(turns),
+            "wer_vs_prompt": round(statistics.fmean(
+                [t["wer"] for t in turns if t["wer"] is not None]), 4)
+            if any(t["wer"] is not None for t in turns) else None,
+        },
         "gap_definition": "agent speech onset - user speech offset, both silence-trimmed, "
                           "measured with harness.audio.segments (merge_gap_ms=30, min_len_ms=20) "
                           "-- the definition in harness/exchange.py",
