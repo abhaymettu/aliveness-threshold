@@ -284,11 +284,16 @@ def variance_decomposition(d, name):
     r2_both = _r2(y, np.column_stack([cond, rater]))
     uniq_c = max(0.0, r2_both - r2_r)
     uniq_r = max(0.0, r2_both - r2_c)
+    shared = r2_both - uniq_c - uniq_r
+    # a genuinely negative shared component means suppression and is worth
+    # seeing; -1e-16 is float noise and is not. Only the noise is zeroed.
+    if abs(shared) < 1e-9:
+        shared = 0.0
     return {
         "dv_name": name,
         "r2_condition_only": r2_c, "r2_rater_only": r2_r, "r2_both": r2_both,
         "unique_condition": uniq_c, "unique_rater": uniq_r,
-        "shared": float(r2_both - uniq_c - uniq_r),
+        "shared": float(shared),
         "residual": float(1.0 - r2_both),
         "n_ratings": int(len(y)), "n_raters": int(len(np.unique(dd["rater_id"]))),
         "n_cells": int(len(np.unique(cell))),
