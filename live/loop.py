@@ -351,7 +351,7 @@ def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
     chunks: list[np.ndarray] = []
     lock = threading.Lock()
     stop_partials = threading.Event()
-    partial = {"t": None, "text": None}
+    partial = {"t": None, "text": None, "last": None}
 
     def partial_worker():
         seen = 0
@@ -363,8 +363,10 @@ def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
                 continue
             seen = len(x)
             txt = partial_asr.text(x)
-            if txt and partial["t"] is None:
-                partial["t"], partial["text"] = time.perf_counter(), txt
+            if txt:
+                partial["last"] = txt
+                if partial["t"] is None:
+                    partial["t"], partial["text"] = time.perf_counter(), txt
 
     pw = threading.Thread(target=partial_worker, daemon=True)
     pw.start()
@@ -430,6 +432,7 @@ def capture(source, asr: Asr, partial_asr: Asr, hangover: float = HANGOVER_MS,
         "t_endpoint": t_end,
         "t_first_partial": partial["t"],
         "partial_text": partial["text"],
+        "partial_last": partial["last"],
         "t_final0": t_final0,
         "t_final": t_final,
         "transcript": final,
@@ -518,6 +521,15 @@ def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
         "ttfa_ms": ms(t_out, off),  # identical by construction: synth() trims
         "acoustic_gap_ms": round(ms(t_out, off) + player.latency_ms, 2),
         "stage_ms": stage,
+        # what each stage cost on its own clock. stage_ms charges only what
+        # reached the listener; this is the work behind it, so a stage that was
+        # hidden inside the hangover can still be compared across configs.
+        "work_ms": {
+            "asr_final": ms(cap["t_final"], cap["t_final0"]),
+            "lm_ttft": ms(t_tok, cap["t_final"]),
+            "lm_sentence": ms(t_sent, t_tok),
+            "tts": ms(t_tts, t_tts0),
+        },
         "n_input_segments": cap["n_segments"],
         "speculated": early is not None,
         "speculations_launched": cap["early_launches"],
@@ -525,6 +537,10 @@ def run_turn(source, asr: Asr, partial_asr: Asr, lm: Lm, voice, player: Player,
         "ref_speech_offset_ms": ref_offset_ms,
         "truncated": truncated,
         "wer": _wer(label, cap["transcript"]) if label else None,
+        "partial_last": cap["partial_last"],
+        # what the gap would have cost in accuracy had the loop simply spoken to
+        # the newest partial instead of re-decoding at the endpoint
+        "wer_partial_last": _wer(label, cap["partial_last"] or "") if label else None,
     }
 
 
@@ -663,6 +679,10 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
             "wer_vs_prompt": round(statistics.fmean(
                 [t["wer"] for t in turns if t["wer"] is not None]), 4)
             if any(t["wer"] is not None for t in turns) else None,
+            "wer_newest_partial": round(statistics.fmean(
+                [t["wer_partial_last"] for t in turns
+                 if t["wer_partial_last"] is not None]), 4)
+            if any(t["wer_partial_last"] is not None for t in turns) else None,
         },
         "gap_definition": "agent speech onset - user speech offset, both silence-trimmed, "
                           "measured with harness.audio.segments (merge_gap_ms=30, min_len_ms=20) "

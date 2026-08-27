@@ -94,7 +94,8 @@ def main() -> int:
           f"speculative {sp['turns_served_speculatively']}/{res['n_turns']} turns "
           f"({sp['pipelines_launched']} launched)")
     print(f"false endpoints {e['false_endpoints']}/{e['n']}   "
-          f"mean WER vs prompt {e['wer_vs_prompt']}")
+          f"mean WER vs prompt {e['wer_vs_prompt']}   "
+          f"(newest partial would have been {e['wer_newest_partial']})")
     print(f"{'':<28}{'median':>9}{'p25':>9}{'p75':>9}{'min':>9}{'max':>9}")
     for k, v in s.items():
         print(f"{k:<28}{v['median']:>9.1f}{v['p25']:>9.1f}{v['p75']:>9.1f}"
