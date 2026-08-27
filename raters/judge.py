@@ -14,6 +14,38 @@ THREE THINGS THIS FILE REFUSES TO DO
      variance is a result, not noise to be smoothed before it is recorded.
   3. Invent a rating. A malformed or missing judgement is dropped and counted
      on stderr. Nothing is filled in, defaulted, or retried into existence.
+
+WHAT THE FIRST FULL RUN ACTUALLY LOOKED LIKE (sonnet, 6 personas, n=540)
+
+Reported here rather than left for someone to discover, because it is a
+problem for this arm of the study and not a result to lead with.
+
+  mean aliveness by cue    none 2.27 | filled_pause 4.42 | breath 4.89
+                           backchannel 5.39 | verbal_stall 5.03
+  mean aliveness by gap    0ms 4.59 ... 1600ms 3.63
+
+The cue effect is about +2.6 points on a 7-point scale. The latency effect is
+about -1.0. Worse, within cue=none the judges are flat across the whole
+latency range (2.27 to 2.56 from 0ms to 1600ms) -- they barely register how
+long the silence was when nothing happened in it.
+
+That is not what a listener does, and there are at least two mundane
+explanations before anything about social timing:
+
+  - a cued clip's description is three lines longer and names a sound. The
+    judge may be responding to "something was described" rather than to when
+    it happened. Description length is confounded with cue by construction
+    and cannot be unconfounded in text.
+  - "nothing is heard during it" may simply read as dead, at any duration.
+
+Latency does move the other two DVs (broken 1.06 -> 2.96, would-wait-again
+100% -> 59% from 0 to 1600ms), so the judges are not ignoring time entirely;
+it is aliveness specifically that looks cue-driven.
+
+Read this as: the LLM arm measures something, and whether that something is
+the same construct a listener reports is exactly the open question. It is
+what web/rate.html exists to settle. Do not report an exchange rate estimated
+from these rows as if it were a human exchange rate.
 """
 
 import argparse
