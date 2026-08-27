@@ -38,17 +38,36 @@ Stages, and which are streaming:
 - ASR: faster-whisper, **chunked, not streaming**. Two models, as a real
   streaming stack uses: ``tiny.en`` in a worker thread re-decodes the whole
   buffer every ``PARTIAL_EVERY_MS`` for partials, and ``base.en`` decodes the
-  complete utterance once at endpoint for the final transcript. The final
-  decode throws away the partial's work -- a true streaming ASR would not, and
-  that waste is inside the reported gap.
+  complete utterance once for the final transcript. The final decode throws
+  away the partial's work -- a true streaming ASR would not.
 - LM: mlx-lm, token-streamed. Generation stops at the first sentence boundary
   and that sentence is what gets spoken.
-- TTS: ``harness.tts``, unmodified. Whole-utterance, **not streaming** --
-  the full synthesis of the first sentence sits inside the gap. The piper
-  backend is used when a voice is present in ``models/piper-live/``, otherwise
-  macOS ``say``. That directory is deliberately *not* ``models/piper/``, so
-  ``tts.Voice._autodetect`` still resolves to ``say`` for everything else in
-  the repo and no offline stimulus changes voice behind anyone's back.
+- TTS: ``harness.tts``, unmodified. Whole-utterance, **not streaming**. The
+  piper backend is used when a voice is present in ``models/piper-live/``,
+  otherwise macOS ``say``. That directory is deliberately *not*
+  ``models/piper/``, so ``tts.Voice._autodetect`` still resolves to ``say`` for
+  everything else in the repo and no offline stimulus changes voice behind
+  anyone's back.
+
+Two paths through those stages, and the gap is measured identically for both:
+
+- **baseline** (default): strictly serial. The endpointer's hangover elapses,
+  *then* the decode runs, *then* the LM, *then* the TTS. This is the path every
+  number in ``live/STATUS.md`` before the optimisation pass came from, and it is
+  kept runnable so no optimisation is ever reported without a before.
+- **fast** (``FastPath``, ``--fast``): once the input has been quiet for
+  ``EARLY_ARM_MS`` the decode, the LM and the TTS run *inside* the hangover, on
+  the audio captured so far. Nothing is guessed -- the audio between that
+  snapshot and the endpoint is silence by definition, so a claimed result is the
+  transcript the baseline would have produced. The bet is only that the talker
+  has stopped, it is checked rather than assumed, and a stale snapshot falls
+  back to the serial path.
+
+Because stages can now overlap, ``stage_ms`` is a *critical path* breakdown
+(see ``_critical_path``): each stage is charged only the time it added beyond
+everything already elapsed, so work hidden inside the hangover reads 0 and the
+stages still sum exactly to the gap. ``work_ms`` carries what each stage cost on
+its own clock. On a serial run the two agree.
 """
 
 from __future__ import annotations
