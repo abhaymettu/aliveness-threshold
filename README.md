@@ -233,11 +233,14 @@ one's — `data/stimuli.jsonl` is not this agent's file to rewrite.
    different instructions. The near-zero rater variance is *within-model*
    persona variance. It says nothing about whether a different model would
    agree, and it should not be read as "LLM judges are reliable".
-6. **There is no live streaming agent.** No mic → ASR → LLM → TTS loop was
-   built or run. There is no TTFT, no time-to-first-audio, and no wall-clock
-   jitter measurement anywhere in this repo. The 10–15 ms figures here are
-   *offline stimulus assembly* accuracy, not what a real robot would achieve.
-   Do not cite them as latency budget headroom.
+6. **No live-agent latency number is cited here, because none exists yet.**
+   Every millisecond in this README is *offline stimulus assembly* accuracy —
+   how precisely a wav was built — not what a real mic → ASR → LLM → TTS loop
+   achieves. Do not read 10–15 ms as latency-budget headroom. A streaming loop
+   is being built in `live/` in parallel with this analysis; when it has run,
+   its measurements land in `live/STATUS.md` and `live/results/`, neither of
+   which exists at the time of writing. Nothing in this analysis depends on
+   one, and no number here was taken from it.
 7. **The cue contrast on `broken` disagrees with itself across bootstrap
    schemes.** Clustered on exchanges it includes zero; clustered on the six
    raters it does not. Content variance is what makes it uncertain, and the
