@@ -3,22 +3,35 @@
     .venv/bin/python figures/make_figures.py --results analysis/out/results.json \
         --ratings data/ratings.jsonl --stimuli data/stimuli.jsonl
 
-Every figure is rendered twice, -light and -dark, so a README can serve the right
-one with <picture>/prefers-color-scheme instead of hoping one PNG survives both.
+Three figures, each carrying one claim:
 
-Simulated input is quarantined into figures/simulated/ and watermarked SIMULATED.
+  dissociation-*.png   what a cue moves vs what a longer wait moves, per outcome
+  curves-*.png         aliveness flat against gap while `broken` climbs
+  variance-*.png       six personas written to disagree, behaving as one rater
+
+Every figure is rendered twice, -light and -dark, so a README can serve the
+right one with <picture>/prefers-color-scheme instead of hoping one PNG
+survives both. Every panel labels its own n. No point estimate is drawn
+without its interval.
+
+Simulated input is quarantined into figures/simulated/ and watermarked
+SIMULATED on every panel.
 """
-import argparse, json, math, os, sys
+import argparse
+import json
+import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analysis"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "analysis"))
 import core  # noqa: E402
 
-# Okabe-Ito, colourblind-safe and mid-luminance so it reads on white and on near-black.
+# Okabe-Ito, colourblind-safe and mid-luminance so it reads on white and near-black.
 CUE_COLOR = {
     "filled_pause": "#E69F00",
     "breath":       "#56B4E9",
@@ -27,24 +40,27 @@ CUE_COLOR = {
 }
 NONE_COLOR = {"light": "#3F3F3F", "dark": "#C8C8C8"}
 LABEL = {"none": "no cue (reference)", "filled_pause": "filled pause “uh”",
-         "breath": "breath", "backchannel": "backchannel", "verbal_stall": "verbal stall"}
+         "breath": "breath", "backchannel": "backchannel",
+         "verbal_stall": "verbal stall"}
+DV_LABEL = {"alive": "aliveness (1–7)", "broken": "seemed broken (1–7)",
+            "wait": "would wait again (proportion)"}
+PERSONA = {"llm-sonnet-patient": "patient", "llm-sonnet-impatient": "impatient",
+           "llm-sonnet-linguist": "linguist", "llm-sonnet-naive": "naive",
+           "llm-sonnet-skeptic": "skeptic", "llm-sonnet-voice_designer": "voice designer"}
 
 THEME = {
     "light": dict(bg="#FFFFFF", fg="#1A1A1A", muted="#6B6B6B", grid="#E2E2E2",
-                  ok="#1B7F4B", warn="#B23A15"),
+                  ok="#1B7F4B", warn="#B23A15", cue="#7B4FA8", lat="#0072B2"),
     "dark":  dict(bg="#0D1117", fg="#E8E8E8", muted="#9AA0A6", grid="#2A2F36",
-                  ok="#4ED88B", warn="#FF8A5C"),
+                  ok="#4ED88B", warn="#FF8A5C", cue="#C08CE8", lat="#56B4E9"),
 }
-
-
-def color(cue, theme):
-    return CUE_COLOR.get(cue, NONE_COLOR[theme])
 
 
 def style(theme):
     t = THEME[theme]
     plt.rcParams.update({
-        "figure.facecolor": t["bg"], "axes.facecolor": t["bg"], "savefig.facecolor": t["bg"],
+        "figure.facecolor": t["bg"], "axes.facecolor": t["bg"],
+        "savefig.facecolor": t["bg"],
         "text.color": t["fg"], "axes.labelcolor": t["fg"], "axes.edgecolor": t["muted"],
         "xtick.color": t["muted"], "ytick.color": t["muted"],
         "axes.spines.top": False, "axes.spines.right": False,
@@ -57,7 +73,7 @@ def style(theme):
 def finish(fig, path, theme, simulated, caption=None):
     t = THEME[theme]
     if caption:
-        fig.text(0.0, -0.035, caption, fontsize=7.5, color=t["muted"],
+        fig.text(0.0, -0.02, caption, fontsize=7.5, color=t["muted"],
                  va="top", ha="left", wrap=True)
     if simulated:
         for ax in fig.axes:
@@ -70,190 +86,197 @@ def finish(fig, path, theme, simulated, caption=None):
     plt.close(fig)
 
 
-def curve_y(x, x50, scale, lo, hi):
-    z = np.clip((np.asarray(x, float) - x50) / scale, -600, 600)
-    return lo + (hi - lo) / (1.0 + np.exp(z))
+def _lo_hi(v):
+    """(est, err_low, err_high) for an errorbar. Never draws a bar without a CI."""
+    if v["est"] is None or v["ci"] is None:
+        return None
+    e = v["est"]
+    return e, e - v["ci"][0], v["ci"][1] - e
 
 
-# ------------------------------------------------------------------- fig 1
+# --------------------------------------------------------- fig 1: dissociation
 
-def fig_curves(res, d, theme, simulated, outdir):
+def fig_dissociation(res, theme, simulated, outdir):
+    """The headline. Cue effect and latency effect on the same axis, per outcome."""
     t = style(theme)
-    er = res["exchange_rate_aliveness"]
-    fig, ax = plt.subplots(figsize=(7.6, 5.0))
-    xs = np.linspace(0, max(1750.0, float(np.max(d["x"])) * 1.05), 400)
+    dvs = ["alive", "broken", "wait"]
+    fig, axes = plt.subplots(1, 3, figsize=(10.4, 4.1))
+    # alive and broken are both 1-7, so they share an x scale and the two effects
+    # are directly comparable by eye. `wait` is a proportion and gets its own.
+    axes[1].sharex(axes[0])
 
-    for cue in er["cues"]:
-        c = color(cue, theme)
-        sh = er["shifts"][cue]["shift_ms"]
-        ax.plot(xs, curve_y(xs, er["x50_ms"] + sh, er["scale_ms"], er["lo"], er["hi"]),
-                color=c, lw=2.4 if cue == "none" else 1.9,
-                ls="--" if cue == "none" else "-", zorder=3,
-                label=f"{LABEL.get(cue, cue)}" + ("" if cue == "none" else f"  +{sh:.0f} ms"))
-        # observed cell means, SE across raters within cell
-        m = d["cue"] == cue
-        cells = np.round(d["x"][m] / 50.0) * 50.0
-        for u in np.unique(cells):
-            sel = cells == u
-            v = d["alive"][m][sel]
-            if v.size < 2:
+    for ax, name in zip(axes, dvs):
+        D = res["dissociation"][name]
+        rows = [("a cue, same wait\n(cue − no cue at 0.8–1.6 s)",
+                 D["cue_effect"], t["cue"]),
+                ("+800 ms of wait\n(1.6 s − 0.8 s, all cues)",
+                 D["latency_effect_1600_vs_800"], t["lat"]),
+                ("+1600 ms of silence\n(1.6 s − 0 s, no cue only)",
+                 D["latency_effect_none_1600_vs_0"], t["lat"])]
+        ys = np.arange(len(rows))[::-1]
+        ax.axvline(0, color=t["muted"], lw=1.0, ls=(0, (4, 3)), zorder=1)
+        for y, (lab, v, col) in zip(ys, rows):
+            b = _lo_hi(v)
+            if b is None:
                 continue
-            ax.errorbar(u, v.mean(), yerr=v.std(ddof=1) / math.sqrt(v.size),
-                        fmt="o", ms=4.2, color=c, alpha=0.85, lw=1.1,
-                        capsize=2.5, zorder=4)
+            est, el, eh = b
+            ax.errorbar(est, y, xerr=[[el], [eh]], fmt="o", ms=7, lw=2.2,
+                        capsize=4, color=col, zorder=3)
+            hits_zero = v["ci"][0] <= 0 <= v["ci"][1]
+            ax.annotate(f"{est:+.2f}", (est, y), textcoords="offset points",
+                        xytext=(0, 11), ha="center", fontsize=9.5,
+                        color=t["muted"] if hits_zero else t["fg"],
+                        weight="normal" if hits_zero else "bold")
+        ax.set_yticks(ys)
+        ax.set_yticklabels([r[0] for r in rows] if name == dvs[0] else [],
+                           fontsize=8.6)
+        ax.set_ylim(-0.6, len(rows) - 0.35)
+        ax.set_title(DV_LABEL[name], fontsize=11.5)
+        ax.set_xlabel("change in rating (95% CI)", fontsize=9.5)
+        ax.grid(axis="x", color=t["grid"], lw=0.8)
+        ax.set_axisbelow(True)
 
-    # the money annotation: the horizontal gap between reference and best cue
-    best = max(((c, s["shift_ms"]) for c, s in er["shifts"].items() if c != er["reference"]),
-               key=lambda kv: kv[1], default=None)
-    if best and best[1] > 20:
-        ymid = (er["lo"] + er["hi"]) / 2.0
-        ax.annotate("", xy=(er["x50_ms"] + best[1], ymid), xytext=(er["x50_ms"], ymid),
-                    arrowprops=dict(arrowstyle="<->", color=t["fg"], lw=1.5), zorder=6)
-        ax.text(er["x50_ms"] + best[1] / 2, ymid + 0.16,
-                f"{best[1]:.0f} ms bought", ha="center", fontsize=10.5,
-                weight="bold", color=t["fg"], zorder=6)
-        ax.axvline(er["x50_ms"], color=t["muted"], lw=0.9, ls=":", zorder=1)
-
-    ax.set_xlabel("response latency (ms, measured gap)")
-    ax.set_ylabel("aliveness (1–7)")
-    ax.set_title("A cue shifts the whole curve to the right")
-    ax.grid(axis="y", color=t["grid"], lw=0.8)
-    ax.set_axisbelow(True)
-    ax.legend(loc="lower left", fontsize=9.5)
-    n = res["design"]
-    finish(fig, f"{outdir}/curves-{theme}.png", theme, simulated,
-           f"n = {n['n_ratings']} ratings, {n['n_raters']} raters, {n['n_stimuli']} stimuli. "
-           f"Points are cell means ± 1 SE. Curves are the shared-shape shift model.")
+    d0 = res["design"]
+    fig.suptitle("A cue moves aliveness. Time moves everything else.",
+                 fontsize=14, weight="bold", y=1.035)
+    fig.tight_layout()
+    finish(fig, f"{outdir}/dissociation-{theme}.png", theme, simulated,
+           f"n = {d0['n_ratings']} ratings, {d0['n_stimuli']} clips, "
+           f"{d0['n_raters_llm']} LLM judges, {d0['n_raters_human']} human raters. "
+           "Modality: transcript+timing, not audio. Bars are 95% percentile CIs from "
+           "a cluster bootstrap over the 18 dialogue exchanges. Grey labels mark "
+           "intervals containing zero. The cue contrast is restricted to 0.8/1.2/1.6 s, "
+           "the only gaps where a cued and an uncued clip share the same wait.")
 
 
-# ------------------------------------------------------------------- fig 2
+# -------------------------------------------------------------- fig 2: curves
 
-def fig_forest(res, theme, simulated, outdir):
+def fig_curves(res, theme, simulated, outdir):
+    """Aliveness flat against gap under cue=none, while `broken` climbs."""
     t = style(theme)
-    er = res["exchange_rate_aliveness"]
-    rows = [(c, s) for c, s in er["shifts"].items() if c != er["reference"]]
-    rows.sort(key=lambda kv: kv[1]["shift_ms"])
-    fig, ax = plt.subplots(figsize=(7.4, 0.72 * len(rows) + 2.3))
+    fig, axes = plt.subplots(1, 2, figsize=(10.6, 4.3), sharex=True)
 
-    for i, (cue, s) in enumerate(rows):
-        c = color(cue, theme)
-        solid = s.get("identified") and s.get("excludes_zero")
-        if s.get("ci_lo") is not None:
-            ax.plot([s["ci_lo"], s["ci_hi"]], [i, i], color=c, lw=2.6,
-                    alpha=1.0 if solid else 0.42, solid_capstyle="butt", zorder=3)
-            for e in (s["ci_lo"], s["ci_hi"]):
-                ax.plot([e, e], [i - 0.13, i + 0.13], color=c, lw=2.0,
-                        alpha=1.0 if solid else 0.42, zorder=3)
-        ax.plot([s["shift_ms"]], [i], "o", ms=9, color=c,
-                mec=t["bg"], mew=1.4, zorder=4, alpha=1.0 if solid else 0.5)
-        lab = (f"{s['shift_ms']:.0f}" if s.get("ci_lo") is None else
-               f"{s['shift_ms']:.0f}  [{s['ci_lo']:.0f}, {s['ci_hi']:.0f}]")
-        if not solid:
-            lab += "  n.s." if s.get("identified") else "  unidentified"
-        ax.text(1.02, i, lab, transform=ax.get_yaxis_transform(), va="center",
-                fontsize=9.5, color=t["fg"] if solid else t["muted"], family="monospace")
+    for ax, name, ylim in ((axes[0], "alive", (1, 7)), (axes[1], "broken", (1, 7))):
+        cm = res["curves"][name]["none_by_nominal"]
+        xs = sorted(float(k) for k in cm["values"])
+        est = [cm["values"][_k(x)]["est"] for x in xs]
+        lo = [cm["values"][_k(x)]["ci"][0] for x in xs]
+        hi = [cm["values"][_k(x)]["ci"][1] for x in xs]
+        col = NONE_COLOR[theme] if name == "alive" else t["warn"]
+        ax.fill_between(xs, lo, hi, color=col, alpha=0.16, lw=0)
+        ax.plot(xs, est, "-o", color=col, lw=2.4, ms=6)
+        ax.set_ylim(*ylim)
+        ax.set_yticks([1, 2, 3, 4, 5, 6, 7])
+        ax.set_xticks(xs)
+        ax.set_xticklabels([f"{int(x)}" for x in xs], fontsize=9.5)
+        ax.set_xlabel("nominal gap (ms) — measured gap is exact here", fontsize=9.5)
+        ax.grid(color=t["grid"], lw=0.8)
+        ax.set_axisbelow(True)
 
-    ax.axvline(0, color=t["muted"], lw=1.2, zorder=1)
-    ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels([LABEL.get(c, c) for c, _ in rows])
-    ax.set_xlabel("milliseconds of latency bought, vs no cue  (95% CI)")
-    ax.set_title("The exchange rate")
-    ax.grid(axis="x", color=t["grid"], lw=0.8)
-    ax.set_axisbelow(True)
-    ax.set_ylim(-0.6, len(rows) - 0.4)
-    n = res["design"]
-    finish(fig, f"{outdir}/exchange-rate-{theme}.png", theme, simulated,
-           f"n = {n['n_ratings']} ratings from {n['n_raters']} raters. "
-           f"Cluster bootstrap over raters, {er['n_boot_requested']} resamples. "
-           f"Faded = interval includes zero or is wider than the {er['design_span_ms']:.0f} ms tested range.")
+        s = res["latency_response_none"][name]["values"]["slope_per_s"]
+        ax.set_title(DV_LABEL[name], fontsize=11.5)
+        flat = s["ci"][0] <= 0 <= s["ci"][1]
+        ax.text(0.03, 0.955 if name == "alive" else 0.955,
+                f"slope {s['est']:+.2f}/s  [{s['ci'][0]:+.2f}, {s['ci'][1]:+.2f}]"
+                + ("   ← includes zero" if flat else ""),
+                transform=ax.transAxes, va="top", fontsize=9.5,
+                color=t["muted"] if flat else t["fg"],
+                weight="normal" if flat else "bold")
+        n = cm["n_per_level"]
+        ax.text(0.03, 0.875, f"n = {sum(n.values())} ratings over "
+                            f"{sum(cm['stimuli_per_level'].values())} clips, "
+                            f"{list(n.values())[0]} ratings per point",
+                transform=ax.transAxes, fontsize=8.4, color=t["muted"])
+
+    fig.suptitle("Silence gets no deader as it gets longer — but it does get "
+                 "more broken", fontsize=13.5, weight="bold", y=1.02)
+    fig.tight_layout()
+    finish(fig, f"{outdir}/curves-{theme}.png", theme, simulated,
+           "cue = none only, so gap is not confounded with cue. Bands are 95% "
+           "percentile CIs from a cluster bootstrap over the 18 exchanges; slopes "
+           "are OLS on actual_gap_ms. Note the left panel sits near the bottom of "
+           "the scale (floor 1), so part of its flatness may be compression rather "
+           "than indifference — the cued clips, which start higher, do fall with gap.")
 
 
-# ------------------------------------------------------------------- fig 3
+def _k(x):
+    return str(x) if str(x) in ("0.0",) else str(x)
+
+
+# ------------------------------------------------------------ fig 3: variance
 
 def fig_variance(res, theme, simulated, outdir):
+    """Condition vs rater, and what each of the six personas actually did."""
     t = style(theme)
-    v = res["variance_aliveness"]
-    parts = [("the manipulation\n(cue × latency)", v["unique_condition"], "#009E73"),
-             ("who is rating\n(rater idiosyncrasy)", v["unique_rater"], "#E69F00"),
-             ("shared / confounded", max(0.0, v["shared"]), "#56B4E9"),
-             ("unexplained", v["residual"], THEME[theme]["muted"])]
-    fig, ax = plt.subplots(figsize=(7.6, 2.5))
-    left = 0.0
-    for name, frac, c in parts:
-        ax.barh([0], [frac], left=left, color=c, height=0.5, edgecolor=t["bg"], lw=1.5)
-        if frac > 0.045:
-            ax.text(left + frac / 2, 0, f"{frac*100:.0f}%", ha="center", va="center",
-                    fontsize=11, weight="bold",
-                    color="#FFFFFF" if c != THEME[theme]["muted"] else t["bg"])
-        left += frac
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2),
+                             gridspec_kw={"width_ratios": [1.05, 1.25]})
+
+    # left: commonality bars
+    ax = axes[0]
+    dvs = ["alive", "broken", "wait"]
+    parts = [("what they were shown", "unique_condition", t["lat"]),
+             ("who was rating", "unique_rater", t["cue"]),
+             ("shared", "shared", t["muted"]),
+             ("unexplained", "residual", t["grid"])]
+    ys = np.arange(len(dvs))[::-1]
+    left = np.zeros(len(dvs))
+    for lab, key, col in parts:
+        w = np.array([max(0.0, res["variance"][dv][key]) for dv in dvs])
+        ax.barh(ys, w, left=left, color=col, label=lab, height=0.55,
+                edgecolor=THEME[theme]["bg"], lw=0.8)
+        for y, x0, ww in zip(ys, left, w):
+            if ww > 0.06:
+                ax.text(x0 + ww / 2, y, f"{ww:.0%}", ha="center", va="center",
+                        fontsize=9, color=THEME[theme]["bg"] if key != "residual"
+                        else t["fg"], weight="bold")
+            elif key == "unique_rater":
+                # too thin to label in place, and it is the point of the panel
+                ax.annotate(f"{ww:.1%}", (x0 + ww, y), textcoords="offset points",
+                            xytext=(0, 15), ha="center", fontsize=8.5, color=col,
+                            weight="bold")
+        left = left + w
+    ax.set_yticks(ys)
+    ax.set_yticklabels([DV_LABEL[dv].split(" (")[0] for dv in dvs], fontsize=10)
     ax.set_xlim(0, 1)
-    ax.set_ylim(-0.75, 0.75)
-    ax.set_yticks([])
-    ax.set_xticks([0, .25, .5, .75, 1])
-    ax.set_xticklabels(["0", "25%", "50%", "75%", "100%"])
-    ax.spines["left"].set_visible(False)
-    ax.set_title("Where the variance in aliveness ratings lives")
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _, _, c in parts]
-    ax.legend(handles, [f"{n.replace(chr(10), ' ')} — {f*100:.0f}%" for n, f, _ in parts],
-              loc="upper center", bbox_to_anchor=(0.5, -0.34), ncol=2, fontsize=9)
+    ax.set_xlabel("share of variance (R² commonality)", fontsize=9.5)
+    ax.set_title("Rater identity explains almost nothing", fontsize=11.5)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=9)
+    ax.grid(axis="x", color=t["grid"], lw=0.8)
+    ax.set_axisbelow(True)
+
+    # right: per persona, cue effect vs cue=none slope
+    ax = axes[1]
+    pr = res["per_rater"]["alive"]["raters"]
+    names = list(pr)
+    ax.axvline(0, color=t["muted"], lw=1.0, ls=(0, (4, 3)))
+    for i, rid in enumerate(names):
+        y = len(names) - 1 - i
+        ax.plot(pr[rid]["cue_effect_matched"], y, "o", ms=8, color=t["cue"],
+                label="cue effect (matched gaps)" if i == 0 else None)
+        ax.plot(pr[rid]["slope_none_per_s"], y, "s", ms=7, color=t["lat"],
+                label="latency slope, no cue (per s)" if i == 0 else None)
+    ax.set_yticks(np.arange(len(names))[::-1])
+    ax.set_yticklabels([PERSONA.get(n, n) for n in names], fontsize=10)
+    ax.set_ylim(-0.6, len(names) - 0.4)
+    ax.set_xlabel("aliveness points", fontsize=9.5)
+    sp = res["per_rater"]["alive"]["spread"]
+    ax.set_title(f"All six agree: cue effect large, slope ≈ 0\n"
+                 f"(persona means span {sp['range']:.2f} of 7 points)", fontsize=11.5)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=1, fontsize=9)
+    ax.grid(axis="x", color=t["grid"], lw=0.8)
+    ax.set_axisbelow(True)
+
+    v = res["variance"]["alive"]
+    fig.tight_layout()
     finish(fig, f"{outdir}/variance-{theme}.png", theme, simulated,
-           f"Commonality analysis on R². n = {v['n_obs']} ratings, "
-           f"{v['n_raters']} raters, {v['n_cells']} design cells.")
-
-
-# ------------------------------------------------------------------- fig 4
-
-def fig_llm_human(res, theme, simulated, outdir):
-    t = style(theme)
-    ag = res.get("llm_vs_human_aliveness", {})
-    if not ag.get("available"):
-        return False
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.2, 4.6))
-
-    a = ag.get("_human_means"); b = ag.get("_llm_means")
-    if a and b:
-        ax1.scatter(a, b, s=16, alpha=0.6, color="#56B4E9", edgecolor="none")
-    lim = [1, 7]
-    ax1.plot(lim, lim, ls="--", lw=1.2, color=t["muted"], zorder=1)
-    ax1.set_xlim(lim); ax1.set_ylim(lim)
-    ax1.set_xlabel("human mean aliveness, per stimulus")
-    ax1.set_ylabel("LLM mean aliveness, per stimulus")
-    ci = ag.get("pearson_ci")
-    sub = f"r = {ag['pearson_r']:.2f}" if "pearson_r" in ag else "r n/a"
-    if ci:
-        sub += f" [{ci[0]:.2f}, {ci[1]:.2f}]"
-    sub += f", {ag.get('n_stimuli_compared', 0)} stimuli"
-    ax1.set_title(f"Do they rank stimuli alike?\n{sub}", fontsize=11.5)
-    ax1.grid(color=t["grid"], lw=0.8); ax1.set_axisbelow(True)
-
-    div = ag.get("exchange_rate_divergence", {})
-    cues = sorted(div, key=lambda c: div[c]["human_ms"])
-    yy = np.arange(len(cues))
-    hg = ag["exchange_rate_by_group"]["human"]["shifts"]
-    lg = ag["exchange_rate_by_group"]["llm"]["shifts"]
-    for i, c in enumerate(cues):
-        for grp, src, off, mk, col in (("human", hg, 0.16, "o", "#009E73"),
-                                       ("LLM", lg, -0.16, "s", "#CC79A7")):
-            s = src[c]
-            if s.get("ci_lo") is not None:
-                ax2.plot([s["ci_lo"], s["ci_hi"]], [i + off] * 2, color=col, lw=2.4, zorder=3)
-            ax2.plot([s["shift_ms"]], [i + off], mk, ms=7.5, color=col,
-                     mec=t["bg"], mew=1.2, zorder=4,
-                     label=grp if i == 0 else None)
-    ax2.axvline(0, color=t["muted"], lw=1.2)
-    ax2.set_yticks(yy); ax2.set_yticklabels([LABEL.get(c, c) for c in cues])
-    ax2.set_xlabel("milliseconds bought (95% CI)")
-    ax2.set_title("Do they price the cues alike?", fontsize=11.5)
-    ax2.set_ylim(-0.55, len(cues) - 0.45)
-    ax2.grid(axis="x", color=t["grid"], lw=0.8); ax2.set_axisbelow(True)
-    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2, fontsize=9.5)
-
-    finish(fig, f"{outdir}/llm-vs-human-{theme}.png", theme, simulated,
-           f"{ag['n_human_raters']} human raters ({ag['n_human_ratings']} ratings) vs "
-           f"{ag['n_llm_raters']} LLM raters ({ag['n_llm_ratings']} ratings). "
-           + ("Modality-matched." if ag.get("matched_on_modality")
-              else "NOT modality-matched — divergence is confounded."))
-    return True
+           f"n = {v['n_ratings']} ratings, {v['n_raters']} personas, {v['n_cells']} "
+           "design cells (cue x measured gap). Commonality analysis on R², so the "
+           "shared component is reported rather than assigned to whichever term went "
+           "in first. Right panel has no per-persona CIs on purpose: each persona "
+           "rates each clip exactly once, so an interval there would be uncertainty "
+           "about clips dressed up as uncertainty about the persona. All six are the "
+           "same model under different instructions — this is within-model persona "
+           "variance, not between-model variance.")
 
 
 def main():
@@ -272,25 +295,12 @@ def main():
         print("!! SIMULATED results: writing to", outdir, "and watermarking every panel.")
         print("!! Nothing here may be referenced from README.md.")
 
-    d = core.load(a.ratings, a.stimuli if os.path.exists(a.stimuli) else None)
-
-    # attach per-stimulus group means for the agreement scatter
-    ag = res.get("llm_vs_human_aliveness", {})
-    if ag.get("available"):
-        h = d["rater_type"] == "human"
-        l = d["rater_type"] == "llm"
-        hm, lm = core._stim_means(d, d["alive"], h), core._stim_means(d, d["alive"], l)
-        common = sorted(set(hm) & set(lm))
-        ag["_human_means"] = [hm[s] for s in common]
-        ag["_llm_means"] = [lm[s] for s in common]
-
     made = []
     for theme in ("light", "dark"):
-        fig_curves(res, d, theme, simulated, outdir); made.append(f"curves-{theme}.png")
-        fig_forest(res, theme, simulated, outdir); made.append(f"exchange-rate-{theme}.png")
-        fig_variance(res, theme, simulated, outdir); made.append(f"variance-{theme}.png")
-        if fig_llm_human(res, theme, simulated, outdir):
-            made.append(f"llm-vs-human-{theme}.png")
+        fig_dissociation(res, theme, simulated, outdir)
+        fig_curves(res, theme, simulated, outdir)
+        fig_variance(res, theme, simulated, outdir)
+        made += [f"{n}-{theme}.png" for n in ("dissociation", "curves", "variance")]
     print(f"wrote {len(made)} figures to {outdir}/")
 
 
