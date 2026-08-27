@@ -40,9 +40,12 @@ Stages, and which are streaming:
   final transcript is one decode of the complete utterance at endpoint.
 - LM: mlx-lm, token-streamed. Generation stops at the first sentence boundary
   and that sentence is what gets spoken.
-- TTS: ``harness.tts`` (backend auto-detected; ``say`` on this machine).
-  Whole-utterance, **not streaming** -- `say` cannot stream below a clause.
-  The full synthesis of the first sentence sits inside the gap.
+- TTS: ``harness.tts``, unmodified. Whole-utterance, **not streaming** --
+  the full synthesis of the first sentence sits inside the gap. The piper
+  backend is used when a voice is present in ``models/piper-live/``, otherwise
+  macOS ``say``. That directory is deliberately *not* ``models/piper/``, so
+  ``tts.Voice._autodetect`` still resolves to ``say`` for everything else in
+  the repo and no offline stimulus changes voice behind anyone's back.
 """
 
 from __future__ import annotations
@@ -80,6 +83,20 @@ PROMPTS = [
 ]
 
 
+def pick_voice(which: str = "auto"):
+    """The loop's TTS voice. ``auto`` prefers piper, falls back to ``say``.
+
+    Backend selection itself lives in ``harness.tts`` and is not reimplemented
+    here; this only chooses which of its two backends to ask for.
+    """
+    found = sorted((Path(__file__).resolve().parent.parent / "models" / "piper-live").glob("*.onnx"))
+    if which in ("auto", "piper") and found:
+        return tts.Voice("piper", name=str(found[0]))
+    if which == "piper":
+        raise RuntimeError("piper requested but no .onnx voice in models/piper-live/")
+    return tts.default_voice()
+
+
 def _to_whisper(x: np.ndarray) -> np.ndarray:
     """22050 Hz -> the 16 kHz faster-whisper expects.
 
@@ -101,7 +118,15 @@ class Asr:
         self.m = WhisperModel(model, device="cpu", compute_type="int8")
 
     def text(self, x: np.ndarray) -> str:
-        segs, _ = self.m.transcribe(_to_whisper(x), language="en", beam_size=1)
+        # temperature=0 pins the decode to a single pass. The default is a
+        # temperature ladder that re-decodes up to five times when the
+        # logprob/compression thresholds fail, which a partial ending mid-word
+        # does constantly -- measured at up to 6.7s for one partial before this
+        # was pinned. condition_on_previous_text off for the same reason.
+        segs, _ = self.m.transcribe(
+            _to_whisper(x), language="en", beam_size=1,
+            temperature=0.0, condition_on_previous_text=False,
+        )
         return " ".join(s.text.strip() for s in segs).strip()
 
 
@@ -133,9 +158,9 @@ class Lm:
             n += 1
             if re.search(r"[.!?](\s|$)", out) and len(out.strip()) > 8:
                 break
-        t_done = time.perf_counter()
         m = re.search(r"^(.*?[.!?])(\s|$)", out.strip(), re.S)
-        return (m.group(1) if m else out.strip()), t_first, t_done, n
+        sentence = m.group(1) if m else out.strip()
+        return sentence, t_first, time.perf_counter(), n
 
 
 class Player:
@@ -377,13 +402,22 @@ def render_prompts(voice, lead_ms=300.0, tail_ms=900.0) -> list[tuple[str, np.nd
     return out
 
 
-def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False) -> dict:
-    voice = tts.default_voice()
+def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False,
+        tts_backend: str = "auto") -> dict:
+    voice = pick_voice(tts_backend)
+    # prompts always get the same voice regardless of what the agent speaks
+    # with, so ASR-side timings stay comparable across TTS backends
+    prompt_voice = pick_voice("auto")
     t0 = time.perf_counter()
     asr, lm = Asr(), Lm()
     load_ms = (time.perf_counter() - t0) * 1000.0
     player = Player(device)
-    prompts = render_prompts(voice)
+    prompts = render_prompts(prompt_voice)
+    t0 = time.perf_counter()
+    asr.text(prompts[0][1])
+    lm.first_sentence("Hello.")
+    voice.synth("Ready.")
+    warm_ms = (time.perf_counter() - t0) * 1000.0
     turns = []
     try:
         for i in range(n_turns):
@@ -417,9 +451,13 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False) -> dic
                 "partial_every_ms": PARTIAL_EVERY_MS},
         "lm": {"model": lm.name, "max_tokens": MAX_TOKENS, "stop": "first sentence"},
         "tts": {"backend": voice.backend, "voice": voice.name, "mode": "whole utterance"},
+        "prompt_tts": {"backend": prompt_voice.backend, "voice": prompt_voice.name},
         "output_device": player.device,
         "output_device_latency_ms": round(player.latency_ms, 2),
         "model_load_ms": round(load_ms, 1),
+        "warmup_ms": round(warm_ms, 1),
+        "warmup": "one ASR decode, one LM generation and one TTS synthesis are run "
+                  "before turn 0, so no measured turn pays a cold graph",
         "hangover_ms": HANGOVER_MS,
         "gap_definition": "agent speech onset - user speech offset, both silence-trimmed, "
                           "measured with harness.audio.segments (merge_gap_ms=30, min_len_ms=20) "
@@ -434,12 +472,12 @@ def run(n_turns: int = 20, out_path=None, device=None, mic: bool = False) -> dic
     return res
 
 
-def demo(n_turns: int = 2) -> dict:
+def demo(n_turns: int = 2, **kw) -> dict:
     """Self-check. Runs real turns and asserts every stage timer exists, is a
     number, and is not negative. A missing or negative timer means the clock
     plumbing is wrong, which would make every number in live/STATUS.md fiction,
     so this fails loudly rather than warning."""
-    res = run(n_turns=n_turns)
+    res = run(n_turns=n_turns, **kw)
     assert res["turns"], "no turns ran"
     for t in res["turns"]:
         for k in ("gap_ms", "ttfa_ms", "acoustic_gap_ms"):

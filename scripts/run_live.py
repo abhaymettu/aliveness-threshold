@@ -4,6 +4,7 @@
     scripts/run_live.py selfcheck                      # 2 turns, assert every timer
     scripts/run_live.py batch --n 20 --out live/results/run.json
     scripts/run_live.py batch --n 5 --device "MacBook Pro Speakers"
+    scripts/run_live.py batch --n 20 --tts say         # force the macOS fallback
     scripts/run_live.py batch --n 3 --mic              # speak the prompts yourself
     scripts/run_live.py devices
 
@@ -28,10 +29,12 @@ def main() -> int:
     sub.add_parser("devices", help="list audio devices and their reported latency")
     sc = sub.add_parser("selfcheck", help="run real turns, assert every stage timer")
     sc.add_argument("--n", type=int, default=2)
+    sc.add_argument("--tts", default="auto", choices=("auto", "piper", "say"))
     b = sub.add_parser("batch", help="run n turns and write the timing JSON")
     b.add_argument("--n", type=int, default=20)
     b.add_argument("--out", default=None)
     b.add_argument("--device", default=None, help="output device name or index")
+    b.add_argument("--tts", default="auto", choices=("auto", "piper", "say"))
     b.add_argument("--mic", action="store_true", help="read the microphone instead of a rendered prompt")
     a = ap.parse_args()
 
@@ -41,10 +44,10 @@ def main() -> int:
         print(sd.query_devices())
         return 0
     if a.cmd == "selfcheck":
-        demo(n_turns=a.n)
+        demo(n_turns=a.n, tts_backend=a.tts)
         return 0
 
-    res = run(n_turns=a.n, out_path=a.out, device=a.device, mic=a.mic)
+    res = run(n_turns=a.n, out_path=a.out, device=a.device, mic=a.mic, tts_backend=a.tts)
     s = res["summary_ms"]
     print(f"\nn = {res['n_turns']} turns   tts={res['tts']['backend']}  "
           f"asr={res['asr']['model']}  out={res['output_device']} "
